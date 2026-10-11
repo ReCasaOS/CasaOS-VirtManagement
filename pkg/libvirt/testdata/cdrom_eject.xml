@@ -1,0 +1,1 @@
+<disk type="file" device="cdrom"><driver name="qemu" type="raw"></driver><target dev="sda" bus="sata"></target><readonly></readonly></disk>

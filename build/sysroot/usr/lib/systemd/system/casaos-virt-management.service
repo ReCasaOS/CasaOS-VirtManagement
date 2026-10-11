@@ -1,0 +1,16 @@
+[Unit]
+After=casaos-gateway.service
+After=casaos-message-bus.service
+After=libvirtd.service virtqemud.service
+Wants=libvirtd.service
+Description=CasaOS Virtual Machine Management Service
+
+[Service]
+ExecStartPre=/usr/bin/casaos-virt-management -v
+ExecStart=/usr/bin/casaos-virt-management -c /etc/casaos/virt-management.conf
+PIDFile=/var/run/casaos/virt-management.pid
+Restart=always
+Type=notify
+
+[Install]
+WantedBy=multi-user.target

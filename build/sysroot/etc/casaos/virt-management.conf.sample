@@ -1,0 +1,24 @@
+[common]
+RuntimePath = /var/run/casaos
+
+[app]
+LogPath = /var/log/casaos/
+LogSaveName = virt-management
+LogFileExt = log
+
+[libvirt]
+; empty: try /run/libvirt/libvirt-sock, then /run/libvirt/virtqemud-sock
+Socket =
+; empty: qemu:///system (test:///default is libvirt's test driver, for tests)
+URI =
+
+[network]
+; the libvirt network CasaOS attaches VMs to, and writes the firewall rules of
+Name = casaos
+Bridge = casaos0
+; an IPv4 /24: gateway .1, fixed VM addresses .2-.99, DHCP from .100
+Subnet = 192.168.123.0/24
+
+[storage]
+; where disks and ISOs live; must be under /DATA so the file browser shows them
+Path = /DATA/VM

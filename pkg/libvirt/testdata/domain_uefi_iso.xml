@@ -1,0 +1,73 @@
+<domain type="kvm">
+  <name>1a2b3c4d</name>
+  <title>Alpine &lt;test&gt; &amp; &#34;more&#34;</title>
+  <metadata>
+    <casaos:vm xmlns:casaos="https://recasaos.github.io/xmlns/vm/1">
+      <casaos:volume>/DATA/VM/1a2b3c4d.qcow2</casaos:volume>
+      <casaos:firmware>uefi</casaos:firmware>
+    </casaos:vm>
+  </metadata>
+  <memory unit="MiB">1024</memory>
+  <vcpu>2</vcpu>
+  <os firmware="efi">
+    <type arch="x86_64" machine="q35">hvm</type>
+    <firmware>
+      <feature enabled="no" name="secure-boot"></feature>
+    </firmware>
+    <loader type="pflash"></loader>
+  </os>
+  <features>
+    <acpi></acpi>
+    <apic></apic>
+  </features>
+  <cpu mode="host-passthrough"></cpu>
+  <clock offset="utc"></clock>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>destroy</on_crash>
+  <devices>
+    <controller type="pci" index="0" model="pcie-root"></controller>
+    <controller type="pci" model="pcie-root-port"></controller>
+    <controller type="pci" model="pcie-root-port"></controller>
+    <controller type="pci" model="pcie-root-port"></controller>
+    <controller type="pci" model="pcie-root-port"></controller>
+    <controller type="pci" model="pcie-root-port"></controller>
+    <controller type="pci" model="pcie-root-port"></controller>
+    <controller type="pci" model="pcie-root-port"></controller>
+    <controller type="pci" model="pcie-root-port"></controller>
+    <controller type="pci" model="pcie-root-port"></controller>
+    <controller type="pci" model="pcie-root-port"></controller>
+    <controller type="pci" model="pcie-root-port"></controller>
+    <controller type="pci" model="pcie-root-port"></controller>
+    <disk type="file" device="disk">
+      <driver name="qemu" type="qcow2" cache="writeback" discard="unmap"></driver>
+      <source file="/DATA/VM/1a2b3c4d.qcow2"></source>
+      <target dev="vda" bus="virtio"></target>
+      <boot order="2"></boot>
+    </disk>
+    <disk type="file" device="cdrom">
+      <driver name="qemu" type="raw"></driver>
+      <source file="/DATA/VM/iso/alpine.iso">
+        <seclabel model="dac" relabel="no"></seclabel>
+      </source>
+      <target dev="sda" bus="sata"></target>
+      <readonly></readonly>
+      <boot order="1"></boot>
+    </disk>
+    <interface type="network">
+      <source network="default"></source>
+      <model type="virtio"></model>
+    </interface>
+    <graphics type="vnc">
+      <listen type="socket"></listen>
+    </graphics>
+    <video>
+      <model type="virtio"></model>
+    </video>
+    <input type="tablet" bus="usb"></input>
+    <input type="keyboard" bus="usb"></input>
+    <rng model="virtio">
+      <backend model="random">/dev/urandom</backend>
+    </rng>
+  </devices>
+</domain>

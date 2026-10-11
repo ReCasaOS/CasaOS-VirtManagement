@@ -1,0 +1,1447 @@
+openapi: 3.0.3
+
+info:
+  title: CasaOS Virtual Machine Management API
+  version: v2
+  description: |
+    CasaOS Virtual Machine Management runs virtual machines through libvirt: create, start, shut down and delete them, add and grow their disks, and open their console.
+
+    For issues, please visit the [GitHub repository](https://github.com/ReCasaOS/CasaOS-VirtManagement).
+
+servers:
+  - url: /v2/virt_management
+
+tags:
+  - name: Host methods
+    description: |-
+      methods for what this host can run
+
+  - name: VM methods
+    description: |-
+      methods for managing virtual machines
+
+  - name: Image methods
+    description: |-
+      methods for the installation images offered when a VM is created
+
+  - name: Host
+    description: |-
+      <SchemaDefinition schemaRef="#/components/schemas/Host" />
+
+  - name: VM
+    description: |-
+      <SchemaDefinition schemaRef="#/components/schemas/VM" />
+
+  - name: VMCreate
+    description: |-
+      <SchemaDefinition schemaRef="#/components/schemas/VMCreate" />
+
+  - name: VMUpdate
+    description: |-
+      <SchemaDefinition schemaRef="#/components/schemas/VMUpdate" />
+
+  - name: Image
+    description: |-
+      <SchemaDefinition schemaRef="#/components/schemas/Image" />
+
+x-tagGroups:
+  - name: Methods
+    tags:
+      - Host methods
+      - VM methods
+      - Image methods
+
+  - name: Schemas
+    tags:
+      - Host
+      - VM
+      - VMCreate
+      - VMUpdate
+      - Image
+
+security:
+  - access_token: []
+
+paths:
+  /host:
+    get:
+      summary: What this host can run
+      description: |-
+        Reports whether libvirt is reachable and, when it is, its version, the host's CPUs and memory, whether KVM and UEFI firmware are available, and the free space where VM disks are kept.
+
+        Answers `200` even when libvirt is unavailable, so the dashboard can say what to install.
+      operationId: getHost
+      tags:
+        - Host methods
+      responses:
+        "200":
+          $ref: "#/components/responses/HostOK"
+        "500":
+          $ref: "#/components/responses/ResponseInternalServerError"
+
+  /host/storage:
+    put:
+      summary: Set the default folder for VM disks
+      description: |-
+        The folder new VMs keep their disks in unless told otherwise, and whose `iso` folder holds the images and downloads. It must be an existing folder under `/DATA` or `/media`. VMs already made keep their disks where they are.
+      operationId: setStorage
+      tags:
+        - VM methods
+      requestBody:
+        $ref: "#/components/requestBodies/StoragePath"
+      responses:
+        "200":
+          $ref: "#/components/responses/StorageFolderOK"
+        "400":
+          $ref: "#/components/responses/ResponseBadRequest"
+
+  /storage:
+    get:
+      summary: Describe a folder for VM disks
+      description: |-
+        Whether a folder can hold VM disks (an existing folder under `/DATA` or `/media`) and how much space it has.
+      operationId: getStorageFolder
+      tags:
+        - VM methods
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/StorageFolderOK"
+        "400":
+          $ref: "#/components/responses/ResponseBadRequest"
+
+  /host/usb:
+    get:
+      summary: The host's USB devices
+      description: |-
+        The USB devices plugged into the host, hubs left out, with what the host uses a device for (a network card, a mounted disk: those cannot be given to a VM) and the VM a device is given to.
+      operationId: listHostUSB
+      tags:
+        - VM methods
+      responses:
+        "200":
+          $ref: "#/components/responses/HostUSBOK"
+
+  /vms:
+    get:
+      summary: List the virtual machines
+      description: |-
+        Every libvirt domain on this host, including those CasaOS did not create (`managed: false`).
+      operationId: listVMs
+      tags:
+        - VM methods
+      responses:
+        "200":
+          $ref: "#/components/responses/VMListOK"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+    post:
+      summary: Create a virtual machine
+      description: |-
+        Defines a VM and creates its disk in the storage folder, as `<name>.qcow2`, where `name` is a generated 8-hex-digit id.
+
+        - no `image_path`, or an `.iso`: a new empty disk of `disk_gib`, with the ISO in the CD-ROM drive. Answers `201`.
+        - a disk image (`.qcow2`, `.img`, `.raw`, `.vmdk`, `.vdi`, possibly compressed as `.xz`, `.gz` or `.zip`): the image is copied and converted into the new disk, grown to `disk_gib` when that is larger. The source is never modified. This can take minutes, so the call answers `202` with the VM in state `creating`; `vm:create-end` or `vm:create-error` follows.
+
+        `start` starts the VM once its disk is ready.
+      operationId: createVM
+      tags:
+        - VM methods
+      requestBody:
+        $ref: "#/components/requestBodies/CreateVM"
+      responses:
+        "201":
+          $ref: "#/components/responses/VMOK"
+        "202":
+          $ref: "#/components/responses/VMOK"
+        "400":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+  /vms/{id}:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+
+    get:
+      summary: Get a virtual machine
+      operationId: getVM
+      tags:
+        - VM methods
+      responses:
+        "200":
+          $ref: "#/components/responses/VMOK"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+    patch:
+      summary: Change a virtual machine's settings
+      description: |-
+        `title` applies at once. `vcpus` and `memory_mib` are written to the VM's definition and take effect at its next start.
+
+        `network` moves a VM on another network to the CasaOS network, the only value it takes: the VM gets a fixed address there, at its next start.
+      operationId: updateVM
+      tags:
+        - VM methods
+      requestBody:
+        $ref: "#/components/requestBodies/UpdateVM"
+      responses:
+        "200":
+          $ref: "#/components/responses/VMOK"
+        "400":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "409":
+          $ref: "#/components/responses/ResponseConflict"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+    delete:
+      summary: Delete a virtual machine
+      description: |-
+        Removes a VM that is shut off. Its disks are deleted only with `delete_disks=true`, and then only the disks CasaOS created for it in the storage folder: never an ISO, never a disk of a VM CasaOS did not create. The response lists what was deleted and what was kept.
+      operationId: deleteVM
+      tags:
+        - VM methods
+      parameters:
+        - name: delete_disks
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          $ref: "#/components/responses/VMDeleteOK"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "409":
+          $ref: "#/components/responses/ResponseConflict"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+  /vms/{id}/{action}:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+      - name: action
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/VMAction"
+
+    post:
+      summary: Change a virtual machine's power state
+      description: |-
+        - `start`: boot a VM that is shut off
+        - `shutdown`: press the power button (ACPI); the guest decides, and the new state arrives as `vm:state-changed`
+        - `reboot`: ask the guest to restart (ACPI)
+        - `force-off`: pull the plug
+        - `reset`: press the reset button
+        - `pause` / `resume`: freeze and unfreeze the VM in memory
+      operationId: changeVMState
+      tags:
+        - VM methods
+      responses:
+        "200":
+          $ref: "#/components/responses/VMOK"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "409":
+          $ref: "#/components/responses/ResponseConflict"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+  /vms/{id}/cdrom:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+
+    put:
+      summary: Insert or eject the CD-ROM
+      description: |-
+        Puts an ISO in the VM's CD-ROM drive, or ejects it when `iso_path` is empty. Applies at once on a running VM, and is kept for the next start.
+      operationId: setCDROM
+      tags:
+        - VM methods
+      requestBody:
+        $ref: "#/components/requestBodies/SetCDROM"
+      responses:
+        "200":
+          $ref: "#/components/responses/VMOK"
+        "400":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "409":
+          $ref: "#/components/responses/ResponseConflict"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+  /vms/{id}/disks:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+
+    post:
+      summary: Add a disk
+      description: |-
+        Creates a new, empty disk in the storage folder, as `<name>-<n>.qcow2`, and adds it to the VM on the next free virtio target (`vdb`, `vdc`, …). Only for a VM CasaOS created.
+
+        On a running VM the disk is plugged in at once. When the VM cannot take it while running (a VM created before CasaOS kept free PCIe slots for this), the disk is added to the definition only, and the VM reports `pending_restart` until its next start.
+      operationId: addDisk
+      tags:
+        - VM methods
+      requestBody:
+        $ref: "#/components/requestBodies/AddDisk"
+      responses:
+        "200":
+          $ref: "#/components/responses/VMOK"
+        "400":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "409":
+          $ref: "#/components/responses/ResponseConflict"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+  /vms/{id}/disks/{target}:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+      - $ref: "#/components/parameters/DiskTarget"
+
+    patch:
+      summary: Grow a disk
+      description: |-
+        Grows a disk CasaOS created to `size_gib`; disks never shrink. Applies at once, on a running VM too. The guest sees a larger disk: growing its partition and file system is up to the guest's own tools, and many cloud images do it at boot.
+      operationId: resizeDisk
+      tags:
+        - VM methods
+      requestBody:
+        $ref: "#/components/requestBodies/ResizeDisk"
+      responses:
+        "200":
+          $ref: "#/components/responses/VMOK"
+        "400":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "409":
+          $ref: "#/components/responses/ResponseConflict"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+    delete:
+      summary: Remove a disk
+      description: |-
+        Takes a disk out of a VM that is shut off. The first disk, which the VM boots from, stays: delete the VM instead. The file is deleted only with `delete_file=true`, and only when CasaOS created it; otherwise it stays in place.
+      operationId: removeDisk
+      tags:
+        - VM methods
+      parameters:
+        - name: delete_file
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          $ref: "#/components/responses/VMOK"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "409":
+          $ref: "#/components/responses/ResponseConflict"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+  /vms/{id}/snapshots:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+
+    post:
+      summary: Take a snapshot
+      description: |-
+        Saves the state of a VM that is shut off: every disk (as a qcow2 internal snapshot) and, with UEFI, its variables. The memory is not saved, since the VM is off. Only for a VM CasaOS created, with qcow2 disks CasaOS created; a disk still in the old qcow2 format (0.10) is upgraded first. While a VM has snapshots, disks can be grown but not added or removed.
+      operationId: createSnapshot
+      tags:
+        - VM methods
+      requestBody:
+        $ref: "#/components/requestBodies/CreateSnapshot"
+      responses:
+        "200":
+          $ref: "#/components/responses/VMOK"
+        "400":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "409":
+          $ref: "#/components/responses/ResponseConflict"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+  /vms/{id}/snapshots/{snapshot}:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+      - $ref: "#/components/parameters/SnapshotID"
+
+    delete:
+      summary: Delete a snapshot
+      description: |-
+        Deletes a snapshot of a VM that is shut off. The VM stays as it is.
+      operationId: deleteSnapshot
+      tags:
+        - VM methods
+      responses:
+        "200":
+          $ref: "#/components/responses/VMOK"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "409":
+          $ref: "#/components/responses/ResponseConflict"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+  /vms/{id}/snapshots/{snapshot}/revert:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+      - $ref: "#/components/parameters/SnapshotID"
+
+    post:
+      summary: Go back to a snapshot
+      description: |-
+        Puts the disks and UEFI variables of a VM that is shut off back as the snapshot saved them. What changed since is lost; the snapshot stays.
+      operationId: revertSnapshot
+      tags:
+        - VM methods
+      responses:
+        "200":
+          $ref: "#/components/responses/VMOK"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "409":
+          $ref: "#/components/responses/ResponseConflict"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+  /vms/{id}/usb:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+
+    put:
+      summary: Set the USB devices given to the VM
+      description: |-
+        The whole list: devices not in it are taken back. A device is given by vendor and product, so it stays the VM's when unplugged and plugged in again; the VM starts without it when it is not there. On a running VM a device is plugged in or out at once. A device the host uses, or another VM has, is refused.
+      operationId: setUSB
+      tags:
+        - VM methods
+      requestBody:
+        $ref: "#/components/requestBodies/SetUSB"
+      responses:
+        "200":
+          $ref: "#/components/responses/VMOK"
+        "400":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "409":
+          $ref: "#/components/responses/ResponseConflict"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+  /vms/{id}/ports:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+
+    put:
+      summary: Set the port forwards
+      description: |-
+        Replaces the VM's port forwards: each sends a port of the host, on all its IPv4 addresses, to a port of the VM, so the LAN reaches a service in the VM at `<host address>:<host_port>`. Only for a VM CasaOS created, on the CasaOS network.
+
+        A host port must be free: nothing may listen on it (a container's published port, the dashboard, SSH) and no other forward may use it. Applies at once, whether the VM runs or not.
+      operationId: setPorts
+      tags:
+        - VM methods
+      requestBody:
+        $ref: "#/components/requestBodies/SetPorts"
+      responses:
+        "200":
+          $ref: "#/components/responses/VMOK"
+        "400":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "409":
+          $ref: "#/components/responses/ResponseConflict"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+  /vms/{id}/console:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+
+    get:
+      summary: Open the console
+      description: |-
+        Upgrades to a WebSocket (subprotocol `binary`) carrying the VM's VNC stream (RFB), for noVNC.
+
+        A browser cannot set headers on a WebSocket, so on this route only the token may be passed as `?token=`. The `Origin` must match the host the dashboard was loaded from.
+      operationId: openConsole
+      tags:
+        - VM methods
+      parameters:
+        - name: token
+          in: query
+          schema:
+            type: string
+      responses:
+        "101":
+          description: Switching Protocols
+        "400":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "403":
+          $ref: "#/components/responses/ResponseForbidden"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "409":
+          $ref: "#/components/responses/ResponseConflict"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+  /images:
+    get:
+      summary: List installation images
+      description: |-
+        ISOs and disk images in the `iso` folder of the storage folder, offered as suggestions when a VM is created. Any image under `/DATA` can be used.
+      operationId: listImages
+      tags:
+        - Image methods
+      responses:
+        "200":
+          $ref: "#/components/responses/ImageListOK"
+        "500":
+          $ref: "#/components/responses/ResponseInternalServerError"
+
+  /images/downloads:
+    get:
+      summary: List image downloads
+      description: |-
+        The downloads started since the service started, running or finished, until dismissed.
+      operationId: listDownloads
+      tags:
+        - Image methods
+      responses:
+        "200":
+          $ref: "#/components/responses/DownloadListOK"
+
+    post:
+      summary: Download an image from a URL
+      description: |-
+        Downloads an ISO or a disk image from an http(s) URL the user gives into the `iso` folder of the storage folder, where the create form offers it. The service contacts no address of its own choosing. The answer comes once the server has answered, with the file's name; the transfer goes on in the background. The name comes from the server (Content-Disposition) or the URL, and must be one of the image names the service takes. An existing file is never overwritten. With `sha256`, a file whose checksum differs is deleted.
+      operationId: startDownload
+      tags:
+        - Image methods
+      requestBody:
+        $ref: "#/components/requestBodies/StartDownload"
+      responses:
+        "202":
+          $ref: "#/components/responses/DownloadOK"
+        "400":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "409":
+          $ref: "#/components/responses/ResponseConflict"
+
+  /images/downloads/{download}:
+    parameters:
+      - name: download
+        in: path
+        required: true
+        schema:
+          type: string
+
+    delete:
+      summary: Cancel or dismiss a download
+      description: |-
+        Cancels a running download, deleting what it wrote, or takes a finished one off the list; a downloaded file stays.
+      operationId: deleteDownload
+      tags:
+        - Image methods
+      responses:
+        "200":
+          $ref: "#/components/responses/DownloadOK"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+
+components:
+  securitySchemes:
+    access_token:
+      type: apiKey
+      in: header
+      name: Authorization
+
+  parameters:
+    VMID:
+      name: id
+      in: path
+      required: true
+      description: the VM's libvirt UUID
+      schema:
+        type: string
+        format: uuid
+
+    SnapshotID:
+      name: snapshot
+      in: path
+      required: true
+      description: the snapshot's id, as in `Snapshot.id`
+      schema:
+        type: string
+        pattern: "^s[0-9]{1,6}$"
+        example: s1
+
+    DiskTarget:
+      name: target
+      in: path
+      required: true
+      description: the disk's target device in the VM, as in `Disk.target`
+      schema:
+        type: string
+        pattern: "^[a-z]{3,4}$"
+        example: vdb
+
+  requestBodies:
+    StoragePath:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - path
+            properties:
+              path:
+                type: string
+                example: /media/Big/VM
+
+    StartDownload:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - url
+            properties:
+              url:
+                type: string
+                example: https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-virt-3.24.2-x86_64.iso
+              sha256:
+                description: the expected SHA-256, in hex; checked when the download ends
+                type: string
+
+    SetUSB:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - devices
+            properties:
+              devices:
+                type: array
+                items:
+                  $ref: "#/components/schemas/USBID"
+
+    CreateSnapshot:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - name
+            properties:
+              name:
+                type: string
+                minLength: 1
+                maxLength: 128
+                example: Before the update
+
+    SetPorts:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - ports
+            properties:
+              ports:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PortForward"
+
+    AddDisk:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - size_gib
+            properties:
+              size_gib:
+                type: integer
+                minimum: 1
+                example: 64
+
+    ResizeDisk:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - size_gib
+            properties:
+              size_gib:
+                description: the new size; larger than the disk's current size
+                type: integer
+                minimum: 1
+                example: 64
+
+    CreateVM:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/VMCreate"
+
+    UpdateVM:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/VMUpdate"
+
+    SetCDROM:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - iso_path
+            properties:
+              iso_path:
+                description: absolute path of an ISO under /DATA; empty to eject
+                type: string
+
+  responses:
+    ResponseInternalServerError:
+      description: Internal Server Error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/BaseResponse"
+          example:
+            message: "Internal Server Error"
+
+    ResponseBadRequest:
+      description: Bad Request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/BaseResponse"
+          example:
+            message: "Bad Request"
+
+    ResponseForbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/BaseResponse"
+          example:
+            message: "Forbidden"
+
+    ResponseNotFound:
+      description: Not Found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/BaseResponse"
+          example:
+            message: "Not Found"
+
+    ResponseConflict:
+      description: Conflict
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/BaseResponse"
+          example:
+            message: "Conflict"
+
+    ResponseServiceUnavailable:
+      description: Service Unavailable
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/BaseResponse"
+          example:
+            message: "libvirt unavailable"
+
+    HostOK:
+      description: OK
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/BaseResponse"
+              - properties:
+                  data:
+                    $ref: "#/components/schemas/Host"
+
+    StorageFolderOK:
+      description: OK
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/BaseResponse"
+              - properties:
+                  data:
+                    $ref: "#/components/schemas/StorageFolder"
+
+    DownloadOK:
+      description: OK
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/BaseResponse"
+              - properties:
+                  data:
+                    $ref: "#/components/schemas/Download"
+
+    DownloadListOK:
+      description: OK
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/BaseResponse"
+              - properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Download"
+
+    HostUSBOK:
+      description: OK
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/BaseResponse"
+              - properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/HostUSBDevice"
+
+    VMListOK:
+      description: OK
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/BaseResponse"
+              - properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/VM"
+
+    VMOK:
+      description: OK
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/BaseResponse"
+              - properties:
+                  data:
+                    $ref: "#/components/schemas/VM"
+
+    VMDeleteOK:
+      description: OK
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/BaseResponse"
+              - properties:
+                  data:
+                    $ref: "#/components/schemas/VMDeleted"
+
+    ImageListOK:
+      description: OK
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/BaseResponse"
+              - properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Image"
+
+  schemas:
+    BaseResponse:
+      properties:
+        message:
+          description: message returned by server side if there is any
+          type: string
+          example: ""
+
+    Host:
+      type: object
+      required:
+        - libvirt
+        - storage_path
+        - network
+      properties:
+        libvirt:
+          type: string
+          enum:
+            - available
+            - unavailable
+          example: available
+        reason:
+          description: why libvirt is unavailable; empty when it is available
+          type: string
+          example: ""
+        libvirt_version:
+          type: string
+          example: "12.0.0"
+        kvm:
+          description: libvirt can run KVM guests on this host
+          type: boolean
+        uefi:
+          description: UEFI firmware is installed, so a VM can boot with firmware `uefi`
+          type: boolean
+        cpus:
+          type: integer
+          example: 4
+        memory_mib:
+          type: integer
+          example: 8192
+        storage_path:
+          description: where VM disks are kept
+          type: string
+          example: /DATA/VM
+        storage_free_bytes:
+          description: free space on the filesystem holding storage_path
+          type: integer
+          format: int64
+        network:
+          description: the CasaOS network, which new VMs are attached to
+          type: string
+          example: casaos
+        network_subnet:
+          type: string
+          example: 192.168.123.0/24
+        network_gateway:
+          description: the host's address on the network, where VMs reach the host and the containers' published ports
+          type: string
+          example: 192.168.123.1
+        bridges:
+          description: the host's own Linux bridges a VM can be put on, to be on the network the bridge is on; CasaOS never creates or changes them
+          type: array
+          items:
+            type: string
+          example: [br0]
+        links:
+          description: the host's wired network cards a VM can sit on with macvtap; the host cannot reach a VM on macvtap, nor can its containers
+          type: array
+          items:
+            type: string
+          example: [enp3s0]
+
+    VMState:
+      type: string
+      enum:
+        - creating
+        - running
+        - paused
+        - shutting-down
+        - shut-off
+        - crashed
+        - suspended
+        - unknown
+      example: running
+
+    VMAction:
+      type: string
+      enum:
+        - start
+        - shutdown
+        - reboot
+        - force-off
+        - reset
+        - pause
+        - resume
+
+    Firmware:
+      type: string
+      enum:
+        - bios
+        - uefi
+      example: uefi
+
+    VMCreate:
+      type: object
+      required:
+        - title
+        - vcpus
+        - memory_mib
+        - disk_gib
+      properties:
+        title:
+          description: the name people see; free text, can be changed later
+          type: string
+          minLength: 1
+          maxLength: 128
+          example: Home Assistant
+        image_path:
+          description: absolute path under /DATA of an ISO or a disk image; empty for a blank disk
+          type: string
+          example: /DATA/VM/iso/alpine-virt-3.22.1-x86_64.iso
+        vcpus:
+          type: integer
+          minimum: 1
+          example: 2
+        memory_mib:
+          type: integer
+          minimum: 128
+          example: 2048
+        disk_gib:
+          description: size of the new disk; an imported image is grown to it when it is smaller, never shrunk
+          type: integer
+          minimum: 1
+          example: 32
+        firmware:
+          $ref: "#/components/schemas/Firmware"
+        storage_path:
+          description: the folder for the VM's disk, under /DATA or /media; the default folder when not given
+          type: string
+          example: /media/Big/VM
+        network:
+          $ref: "#/components/schemas/NetworkChoice"
+        os:
+          $ref: "#/components/schemas/OS"
+        start:
+          type: boolean
+          default: true
+
+    NetworkChoice:
+      description: where a VM's network card goes; the CasaOS network when not given
+      type: object
+      required:
+        - mode
+      properties:
+        mode:
+          type: string
+          enum:
+            - casaos
+            - bridge
+            - macvtap
+        source:
+          description: the host bridge for mode bridge, the host network card for mode macvtap
+          type: string
+          example: br0
+        address:
+          description: |-
+            mode casaos only: `dhcp` for an address from the network's DHCP range, which port forwards cannot use, or a fixed address in the range for them (.2-.99 of the subnet); empty keeps the fixed address the VM has, or picks a free one. A change of address reaches a running guest when it next asks DHCP, at the latest when it restarts.
+          type: string
+          example: 192.168.123.10
+
+    OS:
+      description: what the VM runs, for its icon; empty when unknown
+      type: string
+      enum:
+        - ""
+        - linux
+        - ubuntu
+        - debian
+        - mint
+        - fedora
+        - centos
+        - redhat
+        - arch
+        - alpine
+        - opensuse
+        - freebsd
+        - windows
+        - homeassistant
+        - raspberry
+      example: ubuntu
+
+    StorageFolder:
+      type: object
+      required:
+        - path
+        - default
+      properties:
+        path:
+          description: the folder, symlinks resolved
+          type: string
+        free_bytes:
+          type: integer
+          format: int64
+        default:
+          description: the folder new VMs use unless told otherwise
+          type: boolean
+
+    Download:
+      type: object
+      required:
+        - id
+        - url
+        - name
+        - path
+        - state
+        - done_bytes
+        - created_at
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+        name:
+          type: string
+          example: alpine-virt-3.24.2-x86_64.iso
+        path:
+          description: where the file is once downloaded
+          type: string
+          example: /DATA/VM/iso/alpine-virt-3.24.2-x86_64.iso
+        state:
+          type: string
+          enum:
+            - downloading
+            - verifying
+            - done
+            - failed
+            - canceled
+        total_bytes:
+          description: the size the server announced; absent when it did not
+          type: integer
+          format: int64
+        done_bytes:
+          type: integer
+          format: int64
+        error:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    USBID:
+      type: object
+      required:
+        - vendor
+        - product
+      properties:
+        vendor:
+          type: string
+          pattern: "^[0-9a-f]{4}$"
+          example: 174f
+        product:
+          type: string
+          pattern: "^[0-9a-f]{4}$"
+          example: 244c
+
+    HostUSBDevice:
+      type: object
+      required:
+        - vendor
+        - product
+        - name
+      properties:
+        vendor:
+          type: string
+          example: 174f
+        product:
+          type: string
+          example: 244c
+        name:
+          type: string
+          example: Generic Integrated Camera
+        bus:
+          type: integer
+        address:
+          type: integer
+        in_use:
+          description: what the host uses the device for; empty when it can be given to a VM
+          type: string
+          example: network card enx00e04c447098
+        vm_id:
+          description: the VM the device is given to, if any
+          type: string
+          format: uuid
+        vm_title:
+          type: string
+
+    VMUSBDevice:
+      type: object
+      required:
+        - vendor
+        - product
+        - connected
+      properties:
+        vendor:
+          type: string
+        product:
+          type: string
+        name:
+          description: the device's name, while it is plugged into the host
+          type: string
+        connected:
+          description: plugged into the host now
+          type: boolean
+
+    Snapshot:
+      type: object
+      required:
+        - id
+        - name
+        - created_at
+      properties:
+        id:
+          type: string
+          example: s1
+        name:
+          type: string
+          example: Before the update
+        created_at:
+          type: string
+          format: date-time
+
+    VMUpdate:
+      type: object
+      properties:
+        network:
+          $ref: "#/components/schemas/NetworkChoice"
+        os:
+          $ref: "#/components/schemas/OS"
+        title:
+          type: string
+          minLength: 1
+          maxLength: 128
+        vcpus:
+          type: integer
+          minimum: 1
+        memory_mib:
+          type: integer
+          minimum: 128
+
+    Disk:
+      type: object
+      required:
+        - path
+        - target
+        - managed
+      properties:
+        path:
+          type: string
+          example: /DATA/VM/1a2b3c4d.qcow2
+        target:
+          description: the device the guest sees, and the disk's handle in the API
+          type: string
+          example: vda
+        boot:
+          description: the first disk, which the VM boots from
+          type: boolean
+        capacity_bytes:
+          type: integer
+          format: int64
+        allocation_bytes:
+          description: space the disk takes on the host
+          type: integer
+          format: int64
+        managed:
+          description: created by CasaOS, and so resizable, and deletable with the VM
+          type: boolean
+
+    VM:
+      type: object
+      required:
+        - id
+        - name
+        - title
+        - state
+        - managed
+      properties:
+        id:
+          description: libvirt UUID
+          type: string
+          format: uuid
+        name:
+          description: libvirt domain name; for a VM CasaOS created, 8 hex digits that also name its disk
+          type: string
+          example: 1a2b3c4d
+        title:
+          description: the name people see; the domain name when the domain has no title
+          type: string
+          example: Home Assistant
+        state:
+          $ref: "#/components/schemas/VMState"
+        vcpus:
+          type: integer
+        memory_mib:
+          type: integer
+        firmware:
+          $ref: "#/components/schemas/Firmware"
+        cdrom:
+          description: the ISO in the CD-ROM drive; empty when there is none
+          type: string
+        disks:
+          type: array
+          items:
+            $ref: "#/components/schemas/Disk"
+        managed:
+          description: defined by CasaOS (has CasaOS metadata)
+          type: boolean
+        console:
+          description: has a VNC display the console can open
+          type: boolean
+        pending_restart:
+          description: the definition differs from the running VM (CPU, memory, disks, network) and applies at the next start
+          type: boolean
+        network:
+          $ref: "#/components/schemas/VMNetwork"
+        ports:
+          description: port forwards from the host, on the CasaOS network
+          type: array
+          items:
+            $ref: "#/components/schemas/PortForward"
+        os:
+          $ref: "#/components/schemas/OS"
+        usb:
+          description: host USB devices given to the VM
+          type: array
+          items:
+            $ref: "#/components/schemas/VMUSBDevice"
+        snapshots:
+          description: oldest first
+          type: array
+          items:
+            $ref: "#/components/schemas/Snapshot"
+
+    VMNetwork:
+      description: the VM's first NIC, as its definition has it
+      type: object
+      required:
+        - type
+        - casaos
+      properties:
+        type:
+          description: libvirt interface type (network, bridge, direct, …)
+          type: string
+          example: network
+        name:
+          description: the libvirt network, for type network
+          type: string
+          example: casaos
+        mode:
+          description: the NetworkChoice mode the NIC matches; absent for a NIC CasaOS does not describe
+          type: string
+          enum:
+            - casaos
+            - bridge
+            - macvtap
+        source:
+          description: the host bridge (type bridge) or host network card (type direct)
+          type: string
+          example: br0
+        mac:
+          type: string
+          example: 52:54:00:12:34:56
+        ip:
+          description: the fixed address on the CasaOS network, or its DHCP lease while the VM runs; on a bridge, the address the host last saw the VM use, when the VM runs
+          type: string
+          example: 192.168.123.2
+        casaos:
+          description: on the CasaOS network, so it can have port forwards
+          type: boolean
+        fixed:
+          description: on the CasaOS network with a fixed address (not DHCP), which port forwards need
+          type: boolean
+
+    PortForward:
+      type: object
+      required:
+        - protocol
+        - host_port
+        - guest_port
+      properties:
+        protocol:
+          type: string
+          enum:
+            - tcp
+            - udp
+        host_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          example: 8081
+        guest_port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+          example: 80
+
+    VMDeleted:
+      type: object
+      properties:
+        deleted:
+          description: files deleted
+          type: array
+          items:
+            type: string
+        kept:
+          description: disk files left in place
+          type: array
+          items:
+            type: string
+
+    Image:
+      type: object
+      required:
+        - path
+        - name
+        - kind
+      properties:
+        path:
+          type: string
+          example: /DATA/VM/iso/alpine-virt-3.22.1-x86_64.iso
+        name:
+          type: string
+          example: alpine-virt-3.22.1-x86_64.iso
+        kind:
+          type: string
+          enum:
+            - iso
+            - disk
+        size_bytes:
+          type: integer
+          format: int64

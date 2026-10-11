@@ -1,0 +1,1 @@
+<hostdev mode="subsystem" type="usb" managed="yes"><source startupPolicy="optional"><vendor id="0x174f"></vendor><product id="0x244c"></product></source></hostdev>

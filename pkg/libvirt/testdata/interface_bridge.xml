@@ -1,0 +1,1 @@
+<interface type="bridge"><mac address="52:54:00:12:34:57"></mac><source bridge="br0"></source><model type="virtio"></model></interface>

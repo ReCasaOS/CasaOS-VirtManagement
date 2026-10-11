@@ -1,0 +1,49 @@
+version: 2
+project_name: casaos-virt-management
+before:
+  hooks:
+    - go generate
+    - go mod tidy
+builds:
+  # pure Go (go-libvirt speaks libvirt's RPC itself), so no C cross compilers
+  - id: casaos-virt-management
+    binary: build/sysroot/usr/bin/casaos-virt-management
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+      - -s
+      - -w
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+archives:
+  # the same names as the other components: linux-<arch>-casaos-virt-management-v<version>.tar.gz
+  - name_template: >-
+      {{ .Os }}-{{ .Arch }}-{{ .ProjectName }}-v{{ .Version }}
+    id: casaos-virt-management
+    ids:
+      - casaos-virt-management
+    files:
+      - build/**/*
+      - module.json
+      - LICENSE
+      - NOTICE
+checksum:
+  name_template: "checksums.txt"
+snapshot:
+  version_template: "{{ incpatch .Version }}"
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+release:
+  draft: false
+  prerelease: auto
+  mode: replace
+  name_template: "v{{ .Version }}"

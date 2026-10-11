@@ -1,0 +1,10 @@
+<network>
+  <name>casaos</name>
+  <forward mode="open"></forward>
+  <bridge name="casaos0" stp="on" delay="0"></bridge>
+  <ip address="192.168.123.1" netmask="255.255.255.0">
+    <dhcp>
+      <range start="192.168.123.100" end="192.168.123.254"></range>
+    </dhcp>
+  </ip>
+</network>

@@ -1,0 +1,1 @@
+<pool type="dir"><name>casaos-vm</name><target><path>/DATA/VM</path><permissions><mode>0755</mode></permissions></target></pool>

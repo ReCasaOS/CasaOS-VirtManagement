@@ -1,0 +1,1 @@
+<disk type="file" device="disk"><driver name="qemu" type="qcow2" cache="writeback" discard="unmap"></driver><source file="/DATA/VM/1a2b3c4d-1.qcow2"></source><target dev="vdb" bus="virtio"></target></disk>

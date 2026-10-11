@@ -1,0 +1,17 @@
+CasaOS-VirtManagement
+Copyright 2026 Vincenzo Lombardo
+
+Licensed under the Apache License, Version 2.0 (see LICENSE):
+https://www.apache.org/licenses/LICENSE-2.0
+
+The service was written for ReCasaOS. Its skeleton (the access log, the
+gateway registration, the router and config set-up) is adapted from
+ReCasaOS/CasaOS-AppManagement, itself Apache-2.0, by IceWhale Technology and
+the ReCasaOS contributors.
+
+The author's changes to ReCasaOS/CasaOS-UI that come with this module (the
+virtual machine pages and what hooks them into the dashboard) are offered
+under the Apache License, Version 2.0 as well.
+
+Not affiliated with IceWhale. CASAOS is a trademark of Shanghai IceWhale
+Technology Limited, used here only to say what this is a module of.

@@ -1,0 +1,44 @@
+name: test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Generate the API
+        run: go generate ./...
+
+      - name: gofmt
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))" || { gofmt -l $(git ls-files '*.go'); exit 1; }
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit tests
+        run: go test -race ./...
+
+      # libvirtd answers test:///default with libvirt's test driver: domains,
+      # networks and pools in memory, no QEMU and no KVM
+      - name: Install libvirtd
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libvirt-daemon-system
+          sudo systemctl start libvirtd.socket
+
+      # the socket is root's and the libvirt group's: the test binary runs as root
+      - name: Tests against libvirt's test driver
+        run: |
+          go test -c -race -o service.test ./service
+          sudo VIRT_TEST_LIBVIRT_URI=test:///default ./service.test -test.v -test.run '^TestDriver'

@@ -1,0 +1,22 @@
+*filter
+:CASAOS-VM - [0:0]
+-A CASAOS-VM -i br0 -o br0 -j ACCEPT
+-A CASAOS-VM -i br1 -o br1 -j ACCEPT
+-A CASAOS-VM -o casaos0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A CASAOS-VM -i casaos0 -j ACCEPT
+-A CASAOS-VM -o casaos0 -m conntrack --ctstate DNAT -j ACCEPT
+-A CASAOS-VM -i br-+ -o casaos0 -j ACCEPT
+-A CASAOS-VM -i docker0 -o casaos0 -j ACCEPT
+-A CASAOS-VM -o casaos0 -j REJECT --reject-with icmp-port-unreachable
+COMMIT
+*nat
+:CASAOS-VM-POST - [0:0]
+:CASAOS-VM-DNAT - [0:0]
+-A CASAOS-VM-POST -s 192.168.123.0/24 -d 224.0.0.0/24 -j RETURN
+-A CASAOS-VM-POST -s 192.168.123.0/24 -d 255.255.255.255/32 -j RETURN
+-A CASAOS-VM-POST -s 192.168.123.0/24 ! -d 192.168.123.0/24 -j MASQUERADE
+-A CASAOS-VM-POST -s 192.168.123.0/24 -d 192.168.123.0/24 -m conntrack --ctstate DNAT -j MASQUERADE
+-A CASAOS-VM-DNAT -p tcp -m tcp --dport 2222 -j DNAT --to-destination 192.168.123.2:22
+-A CASAOS-VM-DNAT -p tcp -m tcp --dport 8081 -j DNAT --to-destination 192.168.123.2:80
+-A CASAOS-VM-DNAT -p udp -m udp --dport 5353 -j DNAT --to-destination 192.168.123.3:53
+COMMIT

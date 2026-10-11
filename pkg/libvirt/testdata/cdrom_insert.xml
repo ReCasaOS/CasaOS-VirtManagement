@@ -1,0 +1,1 @@
+<disk type="file" device="cdrom"><driver name="qemu" type="raw"></driver><source file="/DATA/VM/iso/a&#39;b.iso"><seclabel model="dac" relabel="no"></seclabel></source><target dev="sda" bus="sata"></target><readonly></readonly><boot order="1"></boot></disk>

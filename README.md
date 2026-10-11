@@ -40,7 +40,7 @@ On a host:
 
 ## Module
 
-`module.json` says what the module is to the installer: its unit, gateway route, the packages it needs per architecture, the minimum ReCasaOS version and the systems it supports. It ships in the release archive next to `build/`.
+`module.json` says what the module is to the installer: its unit, gateway route, the packages it needs per architecture, the minimum ReCasaOS version and the systems it supports. It ships in the release archive next to `build/`; the installer copies it to `/etc/casaos/modules/virt.json`, where the core reads it too. `schema` is the manifest format version (1).
 
 ## Build and test
 

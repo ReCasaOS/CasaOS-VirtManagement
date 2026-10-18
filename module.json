@@ -11,5 +11,5 @@
     "arm64": ["qemu-system-arm", "qemu-efi-aarch64"]
   },
   "min_recasaos": "0.5.23",
-  "os": ["debian:12", "debian:13", "ubuntu:24.04", "ubuntu:26.04"]
+  "os": ["debian:12", "debian:13", "ubuntu:22.04", "ubuntu:24.04", "ubuntu:26.04"]
 }

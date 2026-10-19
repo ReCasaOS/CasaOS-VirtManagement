@@ -6,7 +6,7 @@
   "unit": "casaos-virt-management.service",
   "gateway_route": "/v2/virt_management",
   "packages": {
-    "common": ["qemu-utils", "libvirt-daemon-system", "libvirt-clients"],
+    "common": ["qemu-utils", "libvirt-daemon-system", "libvirt-clients", "dnsmasq-base"],
     "amd64": ["qemu-system-x86", "ovmf"],
     "arm64": ["qemu-system-arm", "qemu-efi-aarch64"]
   },

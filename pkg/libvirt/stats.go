@@ -48,6 +48,10 @@ type DomainStats struct {
 
 	MemAssignedKiB, MemAvailableKiB, MemUnusedKiB, MemUsableKiB *uint64
 
+	// Crashed: shut off by a guest crash (state.reason); false on the
+	// DomainGetInfo fallback, which has no reason.
+	Crashed bool
+
 	NICs  []NICStats  // by Index
 	Disks []DiskStats // by Name
 
@@ -107,6 +111,7 @@ func ParseDomainStats(rec golibvirt.DomainStatsRecord) DomainStats {
 
 	nics := map[int]*NICStats{}
 	disks := map[int]*DiskStats{}
+	shutoffCrashed := false
 
 	for _, p := range rec.Params {
 		v, isUint := uintOf(p.Value)
@@ -118,6 +123,9 @@ func ParseDomainStats(rec golibvirt.DomainStatsRecord) DomainStats {
 			if isUint && v <= math.MaxInt32 {
 				s.State = StateName(golibvirt.DomainState(v))
 			}
+			continue
+		case golibvirt.DomainStatsStateReason:
+			shutoffCrashed = isUint && v == uint64(golibvirt.DomainShutoffCrashed)
 			continue
 		case golibvirt.DomainStatsCPUTime:
 			s.CPUTimeNs = counter
@@ -203,6 +211,7 @@ func ParseDomainStats(rec golibvirt.DomainStatsRecord) DomainStats {
 		}
 	}
 	capDevices(&s)
+	s.Crashed = s.State == StateShutOff && shutoffCrashed
 
 	return s
 }

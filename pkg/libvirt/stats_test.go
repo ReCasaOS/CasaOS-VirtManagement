@@ -159,6 +159,29 @@ func TestParseDomainStatsShutOff(t *testing.T) {
 	if len(s.NICs) != 0 || len(s.Disks) != 0 {
 		t.Errorf("devices %+v %+v", s.NICs, s.Disks)
 	}
+	if s.Crashed {
+		t.Errorf("shut off by a shutdown reads as crashed")
+	}
+}
+
+func TestParseDomainStatsCrashed(t *testing.T) {
+	cases := []struct {
+		params []golibvirt.TypedParam
+		want   bool
+	}{
+		{[]golibvirt.TypedParam{tp("state.state", int32(5)), tp("state.reason", int32(3))}, true},
+		{[]golibvirt.TypedParam{tp("state.reason", uint32(3)), tp("state.state", uint32(5))}, true}, // any order
+		{[]golibvirt.TypedParam{tp("state.state", int32(5)), tp("state.reason", int32(2))}, false},  // destroyed
+		{[]golibvirt.TypedParam{tp("state.state", int32(1)), tp("state.reason", int32(3))}, false},  // running, reason of another state
+		{[]golibvirt.TypedParam{tp("state.state", int32(5))}, false},
+		{[]golibvirt.TypedParam{tp("state.state", int32(5)), tp("state.reason", "3")}, false},
+		{[]golibvirt.TypedParam{tp("state.state", int32(5)), tp("state.reason", uint64(1<<32+3))}, false},
+	}
+	for i, c := range cases {
+		if s := ParseDomainStats(golibvirt.DomainStatsRecord{Dom: testDom(t, "x"), Params: c.params}); s.Crashed != c.want {
+			t.Errorf("case %d: Crashed %v", i, s.Crashed)
+		}
+	}
 }
 
 func TestParseDomainStatsNoState(t *testing.T) {

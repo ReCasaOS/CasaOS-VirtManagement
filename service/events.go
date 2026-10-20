@@ -8,12 +8,14 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS-VirtManagement/common"
 	"github.com/ReCasaOS/CasaOS-VirtManagement/pkg/libvirt"
+	"github.com/ReCasaOS/CasaOS-VirtManagement/pkg/vmstats"
 	golibvirt "github.com/digitalocean/go-libvirt"
 	"go.uber.org/zap"
 )
@@ -33,7 +35,13 @@ const (
 	PropertyEvent        = "vm:event"
 	PropertyDisksDeleted = "vm:disks-deleted"
 	PropertyMessage      = "message"
+
+	// resource alerts (cpu_high, mem_high, vm_crashed), read by the core
+	EventResourceFiring   = vmstats.EventFiring
+	EventResourceResolved = vmstats.EventResolved
 )
+
+var resourceProperties = []string{"item", "name", "kind", "situation", "value", "since", "source", "minutes"}
 
 func eventType(name string, properties ...string) external.EventType {
 	eventType := external.EventType{Name: name, SourceID: common.VirtManagementServiceName}
@@ -49,11 +57,22 @@ var EventTypes = []external.EventType{
 	eventType(EventCreateEnd, PropertyID, PropertyName, PropertyTitle),
 	eventType(EventCreateError, PropertyID, PropertyName, PropertyTitle, PropertyMessage),
 	eventType(EventDeleteEnd, PropertyID, PropertyName, PropertyTitle, PropertyDisksDeleted),
+	eventType(EventResourceFiring, resourceProperties...),
+	eventType(EventResourceResolved, resourceProperties...),
 }
 
 // Events publishes to the MessageBus over its unix socket.
 type Events struct {
 	runtimePath string
+	lifecycle   atomic.Pointer[func(vmstats.LifecycleEvent)]
+}
+
+// OnLifecycle has f called with every lifecycle event WatchLifecycle reads,
+// before its own RPCs; f must not block.
+func (e *Events) OnLifecycle(f func(vmstats.LifecycleEvent)) { e.lifecycle.Store(&f) }
+
+func lifecycleEventOf(m golibvirt.DomainEventLifecycleMsg) vmstats.LifecycleEvent {
+	return vmstats.LifecycleEvent{UUID: uuidString(m.Dom.UUID), Name: m.Dom.Name, Event: golibvirt.DomainEventType(m.Event), Detail: m.Detail}
 }
 
 func NewEvents(runtimePath string) *Events {
@@ -147,6 +166,10 @@ func (e *Events) WatchLifecycle(ctx context.Context, l *golibvirt.Libvirt) {
 	}
 
 	for ev := range events {
+		if f := e.lifecycle.Load(); f != nil {
+			(*f)(lifecycleEventOf(ev))
+		}
+
 		properties := map[string]string{
 			PropertyID:    uuidString(ev.Dom.UUID),
 			PropertyName:  ev.Dom.Name,

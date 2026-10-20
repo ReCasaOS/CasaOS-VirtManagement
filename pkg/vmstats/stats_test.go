@@ -347,14 +347,19 @@ func TestStatsStoppedVMResolvesItsFiringAlert(t *testing.T) {
 			if n := r.count(EventResolved); n != 1 {
 				t.Fatalf("%d resolved at the first tick, want 1", n)
 			}
-			if a := r.item("vm:" + vmA).Alerts; a != 0 {
+			// a VM libvirt shows crashed also has vm_crashed (firing, kept while it stays so)
+			crashed := 0
+			if state == libvirt.StateCrashed {
+				crashed = 1
+			}
+			if a := r.item("vm:" + vmA).Alerts; a != crashed {
 				t.Errorf("alerts %d", a)
 			}
 			for range 30 {
 				r.tick(stopped(vmA, state))
 			}
-			if n := len(r.events()); n != 2 {
-				t.Errorf("%d events, want 2: %+v", n, r.events())
+			if n := len(r.events()); n != 2+crashed {
+				t.Errorf("%d events, want %d: %+v", n, 2+crashed, r.events())
 			}
 		})
 	}

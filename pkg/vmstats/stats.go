@@ -152,6 +152,7 @@ type entry struct {
 // Stats samples every VM each Interval into a stats.Store, whose Evaluator
 // raises cpu_high and mem_high.
 type Stats struct {
+	dir   string
 	clock stats.Clock
 	src   Source
 	store *stats.Store
@@ -175,6 +176,10 @@ type Stats struct {
 	capUntil time.Time
 	capLog   time.Time
 	errLog   time.Time
+
+	crashed         map[string]crash // by UUID: the firing vm_crashed alerts, as in crashed.json
+	touched         map[string]bool  // by UUID: a lifecycle event since this tick began
+	crashSaveFailed bool
 }
 
 // New opens the store and the evaluator in o.Dir, wires the evaluator to the
@@ -184,8 +189,12 @@ func New(o Options) (*Stats, error) {
 	if err != nil {
 		return nil, err
 	}
+	crashed, err := loadCrashes(o.Dir)
+	if err != nil {
+		logError("crashed.json could not be read; the VM crash alerts start empty", err)
+	}
 	s := &Stats{
-		clock: o.Clock, src: o.Source, store: st,
+		dir: o.Dir, crashed: crashed, touched: map[string]bool{}, clock: o.Clock, src: o.Source, store: st,
 		reg: map[string]*entry{}, stored: map[string]bool{}, forgets: map[string]bool{}, forget: st.Forget,
 		view: map[string]row{}, gone: map[string]string{}, refresh: map[string]bool{}, starts: map[string]time.Time{},
 	}
@@ -239,6 +248,9 @@ func (s *Stats) tick(ctx context.Context) {
 		return
 	}
 	now := s.clock.Now()
+	s.mu.Lock()
+	s.touched = map[string]bool{}
+	s.mu.Unlock()
 
 	doms, err := s.src.Snapshot()
 	if err != nil {
@@ -365,6 +377,8 @@ func (s *Stats) tick(ctx context.Context) {
 		}
 		delete(s.forgets, id)
 	}
+
+	s.crashTick(doms, now)
 
 	if elapsed(now, s.lastSweep, time.Hour) {
 		s.sweep(now)
@@ -510,6 +524,10 @@ func (s *Stats) emit(e stats.Event) {
 func (s *Stats) Items() []Item {
 	s.mu.Lock()
 	view := s.view
+	crashed := make(map[string]bool, len(s.crashed))
+	for id := range s.crashed {
+		crashed[idPrefix+id] = true
+	}
 	s.mu.Unlock()
 	now := s.clock.Now()
 	out := make([]Item, 0, len(view))
@@ -523,6 +541,9 @@ func (s *Stats) Items() []Item {
 			it.CPUPercent, it.MemoryUsed = r.cpu, r.used
 		}
 		it.Alerts = len(s.ev.Active(r.id))
+		if crashed[r.id] {
+			it.Alerts++
+		}
 		out = append(out, it)
 	}
 	slices.SortFunc(out, func(a, b Item) int {
@@ -620,6 +641,11 @@ func (s *Stats) Alerts(id string) ([]stats.Rule, []Alert, error) {
 		v := e.Value
 		active = append(active, Alert{Key: e.Key, Since: e.Since, Value: &v})
 	}
+	s.mu.Lock()
+	if c, ok := s.crashed[strings.TrimPrefix(id, idPrefix)]; ok {
+		active = append(active, Alert{Key: crashKey, Since: c.Since})
+	}
+	s.mu.Unlock()
 	return s.ev.Rules(id), active, nil
 }
 

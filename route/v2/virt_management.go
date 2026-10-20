@@ -14,12 +14,13 @@ import (
 )
 
 type VirtManagement struct {
-	conn *libvirt.Conn
-	vms  *service.VMs
+	conn  *libvirt.Conn
+	vms   *service.VMs
+	stats *service.Stats // nil when no sampler runs: the stats routes answer 503
 }
 
-func NewVirtManagement(conn *libvirt.Conn, vms *service.VMs) codegen.ServerInterface {
-	return &VirtManagement{conn: conn, vms: vms}
+func NewVirtManagement(conn *libvirt.Conn, vms *service.VMs, st *service.Stats) codegen.ServerInterface {
+	return &VirtManagement{conn: conn, vms: vms, stats: st}
 }
 
 // fail answers err with the status its kind calls for.

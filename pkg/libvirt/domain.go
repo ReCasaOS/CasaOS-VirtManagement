@@ -174,6 +174,18 @@ type devicesXML struct {
 	Video       *videoXML       `xml:"video"`
 	Inputs      []inputXML      `xml:"input"`
 	RNG         *rngXML         `xml:"rng"`
+	Balloon     *balloonXML     `xml:"memballoon"`
+}
+
+// balloonXML is the memory balloon. Without a stats period QEMU never asks the
+// guest driver for its memory figures.
+type balloonXML struct {
+	Model string          `xml:"model,attr"`
+	Stats balloonStatsXML `xml:"stats"`
+}
+
+type balloonStatsXML struct {
+	Period int `xml:"period,attr"`
 }
 
 type controllerXML struct {
@@ -284,6 +296,10 @@ const BootDiskTarget = "vda"
 // controller, disk, NIC, balloon, RNG; measured with libvirt 12), leaving seven.
 const pcieRootPorts = 12
 
+// balloonStatsPeriod is how often, in seconds, QEMU refreshes the guest memory
+// statistics; the sampler reads them every few seconds.
+const balloonStatsPeriod = 5
+
 // BuildDomainXML writes the libvirt definition of a new VM.
 //
 //   - KVM, q35 (virt on arm64), the host CPU passed through
@@ -368,6 +384,7 @@ func BuildDomainXML(spec DomainSpec) (string, error) {
 	d.Devices.Video = &videoXML{Model: modelXML{Type: "virtio"}}
 	d.Devices.Inputs = []inputXML{{Type: "tablet", Bus: "usb"}, {Type: "keyboard", Bus: "usb"}}
 	d.Devices.RNG = &rngXML{Model: "virtio", Backend: rngBackendXML{Model: "random", Value: "/dev/urandom"}}
+	d.Devices.Balloon = &balloonXML{Model: "virtio", Stats: balloonStatsXML{Period: balloonStatsPeriod}}
 
 	out, err := xml.MarshalIndent(d, "", "  ")
 	if err != nil {
@@ -589,6 +606,9 @@ type Domain struct {
 	VNC       bool
 	VNCSocket string // only in a running domain's live XML
 	Metadata  *Metadata
+
+	// Description is the owner's free text about the VM (virsh desc).
+	Description string
 }
 
 type domainInXML struct {
@@ -632,6 +652,8 @@ type domainInXML struct {
 		Interfaces []interfaceXML `xml:"interface"`
 		Hostdevs   []hostdevXML   `xml:"hostdev"`
 	} `xml:"devices"`
+
+	Description string `xml:"description"`
 }
 
 // ParseDomainXML reads what the service needs from a domain's XML.
@@ -655,6 +677,7 @@ func ParseDomainXML(s string) (Domain, error) {
 		UEFI:      in.OS.Firmware == "efi" || (in.OS.Loader != nil && in.OS.Loader.Type == "pflash"),
 		Metadata:  in.Metadata.VM,
 	}
+	d.Description = in.Description
 	if in.OS.NVRAM != nil {
 		d.NVRAM = strings.TrimSpace(in.OS.NVRAM.Value)
 	}

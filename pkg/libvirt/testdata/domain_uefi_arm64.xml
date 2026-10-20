@@ -65,5 +65,8 @@
     <rng model="virtio">
       <backend model="random">/dev/urandom</backend>
     </rng>
+    <memballoon model="virtio">
+      <stats period="5"></stats>
+    </memballoon>
   </devices>
 </domain>

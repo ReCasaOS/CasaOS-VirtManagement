@@ -8,12 +8,15 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS-VirtManagement/common"
 	"github.com/ReCasaOS/CasaOS-VirtManagement/pkg/libvirt"
+	"github.com/ReCasaOS/CasaOS-VirtManagement/pkg/vmstats"
 	golibvirt "github.com/digitalocean/go-libvirt"
 	"go.uber.org/zap"
 )
@@ -33,7 +36,13 @@ const (
 	PropertyEvent        = "vm:event"
 	PropertyDisksDeleted = "vm:disks-deleted"
 	PropertyMessage      = "message"
+
+	// resource alerts (cpu_high, mem_high, vm_crashed), read by the core
+	EventResourceFiring   = vmstats.EventFiring
+	EventResourceResolved = vmstats.EventResolved
 )
+
+var resourceProperties = []string{"item", "name", "kind", "situation", "value", "since", "source", "minutes"}
 
 func eventType(name string, properties ...string) external.EventType {
 	eventType := external.EventType{Name: name, SourceID: common.VirtManagementServiceName}
@@ -49,11 +58,47 @@ var EventTypes = []external.EventType{
 	eventType(EventCreateEnd, PropertyID, PropertyName, PropertyTitle),
 	eventType(EventCreateError, PropertyID, PropertyName, PropertyTitle, PropertyMessage),
 	eventType(EventDeleteEnd, PropertyID, PropertyName, PropertyTitle, PropertyDisksDeleted),
+	eventType(EventResourceFiring, resourceProperties...),
+	eventType(EventResourceResolved, resourceProperties...),
 }
 
 // Events publishes to the MessageBus over its unix socket.
 type Events struct {
 	runtimePath string
+	lifecycle   atomic.Pointer[func(vmstats.LifecycleEvent)]
+	noHook      sync.Once
+}
+
+// logNoLifecycleHook is replaced by tests.
+var logNoLifecycleHook = func() {
+	logger.Error("the VM statistics do not receive the lifecycle events: crash alerts come from the sampler only")
+}
+
+// checkLifecycleHook logs once when the lifecycle events are read with no
+// OnLifecycle hook (main forgot to wire the statistics).
+func (e *Events) checkLifecycleHook() {
+	if e.lifecycle.Load() == nil {
+		e.noHook.Do(logNoLifecycleHook)
+	}
+}
+
+// StatsDisabled says the statistics could not start (their error is logged
+// where it happens): no lifecycle hook is expected, so none is complained of.
+func (e *Events) StatsDisabled() { e.noHook.Do(func() {}) }
+
+// OnLifecycle has f called with every lifecycle event WatchLifecycle reads,
+// before its own RPCs; f must not block.
+func (e *Events) OnLifecycle(f func(vmstats.LifecycleEvent)) { e.lifecycle.Store(&f) }
+
+// HandleLifecycle passes ev to the OnLifecycle hook, if one is set.
+func (e *Events) HandleLifecycle(ev vmstats.LifecycleEvent) {
+	if f := e.lifecycle.Load(); f != nil {
+		(*f)(ev)
+	}
+}
+
+func lifecycleEventOf(m golibvirt.DomainEventLifecycleMsg) vmstats.LifecycleEvent {
+	return vmstats.LifecycleEvent{UUID: uuidString(m.Dom.UUID), Name: m.Dom.Name, Event: golibvirt.DomainEventType(m.Event), Detail: m.Detail}
 }
 
 func NewEvents(runtimePath string) *Events {
@@ -145,8 +190,11 @@ func (e *Events) WatchLifecycle(ctx context.Context, l *golibvirt.Libvirt) {
 		logger.Error("error when subscribing to libvirt lifecycle events", zap.Error(err))
 		return
 	}
+	e.checkLifecycleHook()
 
 	for ev := range events {
+		e.HandleLifecycle(lifecycleEventOf(ev))
+
 		properties := map[string]string{
 			PropertyID:    uuidString(ev.Dom.UUID),
 			PropertyName:  ev.Dom.Name,

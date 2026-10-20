@@ -24,6 +24,10 @@ tags:
     description: |-
       methods for the installation images offered when a VM is created
 
+  - name: Stats methods
+    description: |-
+      methods for the VMs' resource history and their alert rules
+
   - name: Host
     description: |-
       <SchemaDefinition schemaRef="#/components/schemas/Host" />
@@ -50,6 +54,7 @@ x-tagGroups:
       - Host methods
       - VM methods
       - Image methods
+      - Stats methods
 
   - name: Schemas
     tags:
@@ -577,6 +582,105 @@ paths:
         "404":
           $ref: "#/components/responses/ResponseNotFound"
 
+  /stats:
+    get:
+      summary: List the VMs and their latest resource use
+      description: |-
+        Every VM of the last libvirt reading. The body is bare: no `data` envelope.
+
+        `cpu_percent` is a percentage of one core (200 is two cores), `null` until two
+        readings exist or while libvirt is away; `memory_used` is `null` when the guest's
+        balloon driver does not report it. `notes` carries codes the page translates
+        (`stats_capacity`: some VMs are listed but not measured).
+
+        Errors: 503 `stats_unavailable` (the sampler is not running).
+      operationId: listStats
+      tags:
+        - Stats methods
+      responses:
+        "200":
+          $ref: "#/components/responses/StatsListOK"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+  /stats/{id}:
+    get:
+      summary: The resource history of one VM
+      description: |-
+        Series over `range` (`live` when absent). The body is bare: no `data` envelope.
+
+        Each point is `[t, avg, min, max]`, t in Unix seconds; `null` values are a gap
+        (nothing was measured), never a zero. `scale.cpu` is `percent_of_one_core`;
+        `scale.cpu_allocation` is the VM's number of virtual CPUs; `scale.memory_limit`
+        its assigned memory in bytes. The note `vm_memory_used_unavailable` says the
+        guest does not report its memory use.
+
+        Errors: 400 `bad_range`, 404 `unknown_item`, 503 `stats_unavailable` (the
+        sampler is not running or the history is unreadable).
+      operationId: getStatsSeries
+      tags:
+        - Stats methods
+      parameters:
+        - $ref: "#/components/parameters/StatsID"
+        - $ref: "#/components/parameters/StatsRange"
+      responses:
+        "200":
+          $ref: "#/components/responses/StatsSeriesOK"
+        "400":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+  /stats/{id}/alerts:
+    get:
+      summary: The alert rules of one VM and its firing alerts
+      description: |-
+        The body is bare: no `data` envelope. `vm_crashed` is listed with a `null` value.
+        Errors: 404 `unknown_item`, 503 `stats_unavailable`.
+      operationId: getStatsAlerts
+      tags:
+        - Stats methods
+      parameters:
+        - $ref: "#/components/parameters/StatsID"
+      responses:
+        "200":
+          $ref: "#/components/responses/StatsAlertsOK"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
+    put:
+      summary: Update the alert rules sent for one VM
+      description: |-
+        Answers like the GET. Each rule carries its four properties; the rules not
+        sent keep their current values. A bad rule is 400 with `message` naming the
+        field, `bad_rules: rules[0].threshold` (also for a property of the wrong type
+        or missing); a body that is not JSON, not an object, has no `rules` list or
+        is over 64 KiB is `bad_rules: rules`. The handler checks the body itself:
+        the request validator skips this route. Errors: 404 `unknown_item` (also for
+        a listed VM with no history yet: its rules would not be kept),
+        503 `stats_unavailable` (also when the rules were applied in memory but
+        could not be written to disk: they are not durable).
+      operationId: setStatsAlerts
+      tags:
+        - Stats methods
+      parameters:
+        - $ref: "#/components/parameters/StatsID"
+      requestBody:
+        $ref: "#/components/requestBodies/StatsRules"
+      responses:
+        "200":
+          $ref: "#/components/responses/StatsAlertsOK"
+        "400":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
 components:
   securitySchemes:
     access_token:
@@ -585,6 +689,28 @@ components:
       name: Authorization
 
   parameters:
+    StatsID:
+      name: id
+      in: path
+      required: true
+      description: |-
+        A VM's stats identity, `vm:<uuid>`, encoded for a URL as one path segment
+        (`vm%3A<uuid>`).
+      schema:
+        type: string
+        minLength: 1
+        example: "vm:6f1c2a5e-8f0b-4c55-9d1e-2b7a3c4d5e6f"
+
+    StatsRange:
+      name: range
+      in: query
+      description: |-
+        One of `live` (15 minutes at 5 s, the default when absent), `15m`, `1h`, `24h`,
+        `7d`. Any other value is 400 `bad_range`.
+      schema:
+        type: string
+        example: "1h"
+
     VMID:
       name: id
       in: path
@@ -615,6 +741,19 @@ components:
         example: vdb
 
   requestBodies:
+    StatsRules:
+      description: The rules to update, by key
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              rules:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StatsRule"
+
     StoragePath:
       required: true
       content:
@@ -744,6 +883,27 @@ components:
                 type: string
 
   responses:
+    StatsListOK:
+      description: OK
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StatsList"
+
+    StatsSeriesOK:
+      description: OK
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StatsSeries"
+
+    StatsAlertsOK:
+      description: OK
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StatsAlerts"
+
     ResponseInternalServerError:
       description: Internal Server Error
       content:
@@ -906,6 +1066,220 @@ components:
                       $ref: "#/components/schemas/Image"
 
   schemas:
+    StatsItem:
+      type: object
+      required:
+        - id
+        - name
+        - kind
+        - group
+        - state
+        - started_at
+        - detail
+        - cpu_percent
+        - memory_used
+        - memory_limit
+        - alerts
+      properties:
+        id:
+          type: string
+          example: "vm:6f1c2a5e-8f0b-4c55-9d1e-2b7a3c4d5e6f"
+        name:
+          type: string
+          example: debian
+        kind:
+          description: "`vm`"
+          type: string
+        group:
+          type: string
+          example: Machines virtuelles
+        state:
+          description: "`running`, `stopped`, `paused`, `crashed` or `unknown`"
+          type: string
+        started_at:
+          description: When the VM was seen starting, `null` when unknown
+          type: string
+          format: date-time
+          nullable: true
+        detail:
+          description: The VM's description or OS hint, text only, `null` when none
+          type: string
+          maxLength: 200
+          nullable: true
+        cpu_percent:
+          description: Percent of one core, `null` before two readings
+          type: number
+          format: double
+          nullable: true
+        memory_used:
+          description: Bytes, `null` when the guest does not report it
+          type: integer
+          format: int64
+          nullable: true
+        memory_limit:
+          description: Assigned memory in bytes
+          type: integer
+          format: int64
+          nullable: true
+        alerts:
+          description: Number of firing alerts, `vm_crashed` included
+          type: integer
+
+    StatsList:
+      type: object
+      required:
+        - items
+        - notes
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/StatsItem"
+        notes:
+          type: array
+          items:
+            type: string
+          example: []
+
+    StatsScale:
+      type: object
+      required:
+        - cpu
+        - cpu_allocation
+        - memory_limit
+      properties:
+        cpu:
+          type: string
+          example: percent_of_one_core
+        cpu_allocation:
+          description: The VM's virtual CPUs
+          type: number
+          format: double
+          nullable: true
+        memory_limit:
+          description: Assigned memory in bytes
+          type: integer
+          format: int64
+          nullable: true
+
+    StatsSeriesChart:
+      type: object
+      required:
+        - chart
+        - name
+        - unit
+        - points
+      properties:
+        chart:
+          type: string
+          example: cpu
+        name:
+          type: string
+          example: total
+        unit:
+          type: string
+          example: percent
+        points:
+          description: "`[t, avg, min, max]`, t in Unix seconds; `null` is a gap"
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+              format: double
+              nullable: true
+
+    StatsSeries:
+      type: object
+      required:
+        - id
+        - range
+        - step_seconds
+        - from
+        - to
+        - scale
+        - series
+        - notes
+      properties:
+        id:
+          type: string
+        range:
+          type: string
+          example: "1h"
+        step_seconds:
+          type: integer
+          example: 60
+        from:
+          type: integer
+          format: int64
+        to:
+          type: integer
+          format: int64
+        scale:
+          $ref: "#/components/schemas/StatsScale"
+        series:
+          type: array
+          items:
+            $ref: "#/components/schemas/StatsSeriesChart"
+        notes:
+          type: array
+          items:
+            type: string
+          example: ["vm_memory_used_unavailable"]
+
+    StatsRule:
+      type: object
+      properties:
+        key:
+          description: "`cpu_high` or `mem_high`"
+          type: string
+          example: cpu_high
+        enabled:
+          type: boolean
+        threshold:
+          description: Percent
+          type: number
+          format: double
+          example: 90
+        minutes:
+          type: integer
+          example: 10
+
+    StatsAlert:
+      type: object
+      required:
+        - key
+        - since
+        - value
+      properties:
+        key:
+          description: "`cpu_high`, `mem_high` or `vm_crashed`"
+          type: string
+          example: cpu_high
+        since:
+          type: string
+          format: date-time
+        value:
+          description: Percent, `null` for `vm_crashed`
+          type: number
+          format: double
+          nullable: true
+
+    StatsAlerts:
+      type: object
+      required:
+        - rules
+        - active
+      properties:
+        rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/StatsRule"
+        active:
+          type: array
+          items:
+            $ref: "#/components/schemas/StatsAlert"
+
     BaseResponse:
       properties:
         message:

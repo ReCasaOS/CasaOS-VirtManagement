@@ -18,6 +18,9 @@ func TestAcceptsTokenInQuery(t *testing.T) {
 		{http.MethodPost, V2APIPath + "/vms/:id/console", false},
 		{http.MethodGet, V2APIPath + "/host", false},
 		{http.MethodGet, V2APIPath + "/vms/:id", false},
+		{http.MethodGet, V2APIPath + "/stats", false},
+		{http.MethodGet, V2APIPath + "/stats/:id", false},
+		{http.MethodGet, V2APIPath + "/stats/:id/alerts", false},
 		{http.MethodGet, "", false},
 	}
 

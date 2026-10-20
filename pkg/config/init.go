@@ -33,6 +33,10 @@ var (
 		Path: "/DATA/VM",
 	}
 
+	StatsInfo = &StatsModel{
+		Path: "/var/lib/casaos/stats/virt_management",
+	}
+
 	Cfg            *ini.File
 	ConfigFilePath string
 )
@@ -64,6 +68,7 @@ func InitSetup(config string, sample string) {
 	mapTo("libvirt", LibvirtInfo)
 	mapTo("network", NetworkInfo)
 	mapTo("storage", StorageInfo)
+	mapTo("stats", StatsInfo)
 }
 
 // LibvirtSockets is where libvirtd is looked for, in order.

@@ -12,6 +12,7 @@ Virtual machines for a ReCasaOS box: a service that drives libvirt and QEMU, and
 - **Snapshots** with the VM off (qemu-img, UEFI variables included).
 - **Network**, per VM: the CasaOS NAT network (fixed or DHCP address, port forwards from the host, reachable from containers), an existing host bridge, or macvtap on a wired card. The service never creates or changes host bridges.
 - **USB passthrough**, live on a running VM; devices the host needs (its network card, a mounted disk) are refused.
+- **Statistics**: CPU, memory, network and disk history per VM, and alerts when a VM is busy, short of memory or crashed (see below).
 - **Images from a URL** the user gives, with an optional sha256. No built-in catalogue: the box only contacts addresses the user gives.
 
 ## How it is built
@@ -25,6 +26,9 @@ The service listens on a random loopback port and registers `/v2/virt_management
 | `/vms/{id}/cdrom`, `/disks`, `/snapshots`, `/usb`, `/ports` | a VM's devices, snapshots and port forwards |
 | `/vms/{id}/console` | the VNC WebSocket (the only route that takes the token as `?token=`) |
 | `/images`, `/images/downloads` | ISOs and disk images, and downloads from a URL |
+| `/stats` | the VMs and their latest CPU and memory use |
+| `/stats/{id}` | one VM's history over a range (`id` is `vm:<uuid>`, encoded as one path segment) |
+| `/stats/{id}/alerts` | GET: a VM's alert rules and firing alerts; PUT: change the rules |
 
 It talks to libvirtd with [go-libvirt](https://github.com/digitalocean/go-libvirt) (pure Go RPC), so it builds with `CGO_ENABLED=0`. libvirt is the only state: there is no database, and what CasaOS needs to remember goes in the domain's `<metadata>`. VMs made outside CasaOS are listed and can be started and stopped, but their disks are never touched. Without libvirt the service still runs and says so. Lifecycle events go to the MessageBus as `vm:*`.
 
@@ -36,7 +40,23 @@ On a host:
 - `/DATA/VM/` (disks) and `/DATA/VM/iso/` (ISOs and images), the libvirt storage pool `casaos-vm`
 - the libvirt network `casaos` (bridge `casaos0`, 192.168.123.0/24)
 - `/var/log/casaos/virt-management.log`
+- `/var/lib/casaos/stats/virt_management/` (`[stats] Path`): the VMs' statistics history and alert settings
 - `casaos-virt-management.service`, after libvirtd
+
+## Statistics
+
+A sampler reads every VM's counters from libvirt every 5 seconds (one `ConnectGetAllDomainStats` call, or one call per domain on a driver without it) and records them in `[stats] Path` (default `/var/lib/casaos/stats/virt_management`). The routes above serve them; the OpenAPI file has the details. The alerts `cpu_high`, `mem_high` and `vm_crashed` are announced on the MessageBus as `resource:alert-firing` and `resource:alert-resolved`. If the history cannot be opened, the stats routes answer 503 and the rest of the service is unaffected.
+
+- **Memory used** needs the guest's balloon driver. Without it the series carries the note `vm_memory_used_unavailable` and the memory alert stays silent. A VM created by this version asks the balloon for statistics every few seconds. A VM created before it lacks that setting and shows the note until it is recreated (the setting is written only when a VM is created; stopping and starting it again does not add it).
+- **Cost**: parsing, maths and recording for 10 running VMs (4 vCPUs, 2 NICs, 2 disks each) took about 3 to 3.7 ms per tick on a Windows 11 desktop with a Ryzen 9 5900X, a desktop CPU: slower boxes will differ (`go test ./pkg/vmstats -run xxx -bench Tick10VMs -benchmem`, 3 runs, about 125 KB and 473 allocations per tick). That excludes the libvirt calls themselves, which have not been measured.
+
+Known limits:
+
+- go-libvirt calls take no context: a `Snapshot` or `Describe` call that hangs (libvirtd stuck rather than gone) blocks the tick, the next ones and shutdown until libvirt answers or the connection drops.
+- A VM crash is seen from libvirt's lifecycle events. Where only the periodic read is available, a crash that happens while the service is down is missed.
+- The balloon's `last-update` timestamp is not parsed, so a guest that stopped reporting can show its last known memory figure.
+- libvirt's test driver answers `ConnectGetAllDomainStats` with the state only; a running domain without a CPU time in that answer gets its CPU time, vCPUs and assigned memory from `DomainGetInfo` (no device counters).
+- Not verified against real libvirt yet: `ConnectGetAllDomainStats` on the test driver, the no-wait flag on busy domains, a memory balloon being accepted on the domain XML, and reconnecting after libvirtd restarts. Only unit tests against fakes have run so far.
 
 ## Module
 
@@ -49,13 +69,13 @@ go generate ./...
 go test ./...
 ```
 
-The tests in `service/testdriver_test.go` run the service against libvirt's test driver, which keeps domains, networks and pools in memory and needs no KVM. They need a running libvirtd and are skipped unless `VIRT_TEST_LIBVIRT_URI` is set:
+The tests in `service/testdriver_test.go` and `service/testdriver_stats_test.go` run the service against libvirt's test driver, which keeps domains, networks and pools in memory and needs no KVM. They need a running libvirtd and are skipped unless `VIRT_TEST_LIBVIRT_URI` is set:
 
 ```sh
 sudo VIRT_TEST_LIBVIRT_URI=test:///default go test ./service -run '^TestDriver'
 ```
 
-`[libvirt] URI` in the config does the same for the whole service. Releases are built by GoReleaser from a `v*.*.*` tag: `linux-{amd64,arm64}-casaos-virt-management-v<version>.tar.gz`, like the other ReCasaOS components.
+`VIRT_TEST_LIBVIRT_SOCKET` is the daemon's socket (`/run/libvirt/libvirt-sock` when unset). `[libvirt] URI = test:///default` in the config does the same for the whole service, statistics included: that URI and `VIRT_TEST_LIBVIRT_URI=test:///default` are what a module proof sets. The test driver has no memory balloon, so a VM's series carry the note `vm_memory_used_unavailable`, and it cannot make a VM crash. Releases are built by GoReleaser from a `v*.*.*` tag: `linux-{amd64,arm64}-casaos-virt-management-v<version>.tar.gz`, like the other ReCasaOS components.
 
 ## Licence
 

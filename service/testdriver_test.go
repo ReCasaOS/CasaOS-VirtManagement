@@ -10,13 +10,11 @@ package service
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/ReCasaOS/CasaOS-VirtManagement/codegen"
 	"github.com/ReCasaOS/CasaOS-VirtManagement/pkg/config"
@@ -58,33 +56,13 @@ func (c *iptablesCalls) last() string {
 func testDriverVMs(t *testing.T) (*VMs, *iptablesCalls) {
 	t.Helper()
 
-	uri := os.Getenv("VIRT_TEST_LIBVIRT_URI")
-	if uri == "" {
-		t.Skip("VIRT_TEST_LIBVIRT_URI is not set")
-	}
+	// no MessageBus: an event that cannot be published is only logged
+	return testDriverVMsOn(t, testDriverConn(t), NewEvents(t.TempDir()))
+}
 
-	socket := os.Getenv("VIRT_TEST_LIBVIRT_SOCKET")
-	if socket == "" {
-		socket = "/run/libvirt/libvirt-sock"
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	conn := libvirt.New([]string{socket}, uri)
-	go conn.Run(ctx)
-
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		_, err := conn.Get()
-		if err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no connection to %s on %s: %v", uri, socket, err)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+// testDriverVMsOn is testDriverVMs on a given connection and events.
+func testDriverVMsOn(t *testing.T, conn *libvirt.Conn, events *Events) (*VMs, *iptablesCalls) {
+	t.Helper()
 
 	oldPath := config.StorageInfo.Path
 	config.StorageInfo.Path = t.TempDir()
@@ -99,8 +77,7 @@ func testDriverVMs(t *testing.T) (*VMs, *iptablesCalls) {
 	calls := &iptablesCalls{}
 	fw := firewall.NewWithRunner(calls.run, filepath.Join(t.TempDir(), "ip_forward"))
 
-	// no MessageBus either: an event that cannot be published is only logged
-	return NewVMs(ctx, conn, NewEvents(t.TempDir()), net, fw), calls
+	return NewVMs(t.Context(), conn, events, net, fw), calls
 }
 
 func TestDriverList(t *testing.T) {

@@ -19,8 +19,15 @@ import (
 // interface and block statistics.
 const AllStatsGroups uint32 = 63
 
+// StatsNoWait lets ConnectGetAllDomainStats skip the statistics of a domain
+// whose job is busy (a migration, a snapshot) instead of waiting for it, which
+// would hold up every VM's reading.
+const StatsNoWait = uint32(golibvirt.ConnectGetAllDomainsStatsNowait)
+
 // A VM's series are permanent (48 at most), 7 of them fixed: 3 per NIC and 4
-// per disk leave room for this many devices. The others are not reported.
+// per disk leave room for this many devices. The cap holds per reading only: a
+// VM whose devices change over its life can still reach 48, where Common's
+// ErrSeriesCap is the backstop.
 const (
 	MaxStatsNICs  = 4
 	MaxStatsDisks = 7
@@ -47,11 +54,12 @@ type DomainStats struct {
 	dom golibvirt.Domain
 }
 
-// NICStats are a NIC's counters. Index is its position in the domain XML.
+// NICStats are a NIC's counters, nil when not reported. Index is its position
+// in the domain XML.
 type NICStats struct {
 	Index                                            int
 	MAC                                              string // canonical; empty when unknown
-	RxBytes, RxPkts, RxDrop, TxBytes, TxPkts, TxDrop uint64
+	RxBytes, RxPkts, RxDrop, TxBytes, TxPkts, TxDrop *uint64
 
 	ifname string // the host's tap device, a new one at every start
 }
@@ -65,10 +73,19 @@ func (n NICStats) ID() string {
 	return "nic" + strconv.Itoa(n.Index)
 }
 
-// DiskStats are a disk's counters. Name is its target: vda, sda, …
+func (n NICStats) reported() bool {
+	return n.RxBytes != nil || n.RxPkts != nil || n.RxDrop != nil || n.TxBytes != nil || n.TxPkts != nil || n.TxDrop != nil
+}
+
+// DiskStats are a disk's counters, nil when not reported. Name is its
+// target: vda, sda, …
 type DiskStats struct {
 	Name                             string
-	RdBytes, RdReqs, WrBytes, WrReqs uint64
+	RdBytes, RdReqs, WrBytes, WrReqs *uint64
+}
+
+func (d DiskStats) reported() bool {
+	return d.RdBytes != nil || d.RdReqs != nil || d.WrBytes != nil || d.WrReqs != nil
 }
 
 // StatsAPI is what reading statistics calls; *golibvirt.Libvirt has it.
@@ -83,17 +100,18 @@ type StatsAPI interface {
 }
 
 // ParseDomainStats reads one record of ConnectGetAllDomainStats. A device
-// without byte counters (an empty CD-ROM drive) is left out; its other
-// missing counters read 0.
+// without any counter (an empty CD-ROM drive, any disk of a shut-off domain)
+// is left out.
 func ParseDomainStats(rec golibvirt.DomainStatsRecord) DomainStats {
 	s := DomainStats{UUID: uuid.UUID(rec.Dom.UUID).String(), Name: cleanText(rec.Dom.Name, maxNameLen), State: StateUnknown, dom: rec.Dom}
 
 	nics := map[int]*NICStats{}
 	disks := map[int]*DiskStats{}
-	hasBytes := map[string]bool{} // "net.N" / "block.N"
 
 	for _, p := range rec.Params {
 		v, isUint := uintOf(p.Value)
+		counter := ptrIf(v, isUint)
+		name, isString := p.Value.I.(string)
 
 		switch p.Field {
 		case golibvirt.DomainStatsStateState:
@@ -102,7 +120,7 @@ func ParseDomainStats(rec golibvirt.DomainStatsRecord) DomainStats {
 			}
 			continue
 		case golibvirt.DomainStatsCPUTime:
-			s.CPUTimeNs = ptrIf(v, isUint)
+			s.CPUTimeNs = counter
 			continue
 		case golibvirt.DomainStatsVCPUCurrent:
 			if isUint && v <= math.MaxInt32 {
@@ -111,16 +129,16 @@ func ParseDomainStats(rec golibvirt.DomainStatsRecord) DomainStats {
 			}
 			continue
 		case golibvirt.DomainStatsBalloonCurrent:
-			s.MemAssignedKiB = ptrIf(v, isUint)
+			s.MemAssignedKiB = counter
 			continue
 		case golibvirt.DomainStatsBalloonAvailable:
-			s.MemAvailableKiB = ptrIf(v, isUint)
+			s.MemAvailableKiB = counter
 			continue
 		case golibvirt.DomainStatsBalloonUnused:
-			s.MemUnusedKiB = ptrIf(v, isUint)
+			s.MemUnusedKiB = counter
 			continue
 		case golibvirt.DomainStatsBalloonUsable:
-			s.MemUsableKiB = ptrIf(v, isUint)
+			s.MemUsableKiB = counter
 			continue
 		}
 
@@ -130,21 +148,23 @@ func ParseDomainStats(rec golibvirt.DomainStatsRecord) DomainStats {
 				n = &NICStats{Index: i}
 				nics[i] = n
 			}
-			if suffix == golibvirt.DomainStatsNetSuffixName {
-				if name, ok := p.Value.I.(string); ok {
+			switch suffix {
+			case golibvirt.DomainStatsNetSuffixName:
+				if isString {
 					n.ifname = name
 				}
-				continue
-			}
-			counter := map[string]*uint64{
-				golibvirt.DomainStatsNetSuffixRxBytes: &n.RxBytes, golibvirt.DomainStatsNetSuffixRxPkts: &n.RxPkts, golibvirt.DomainStatsNetSuffixRxDrop: &n.RxDrop,
-				golibvirt.DomainStatsNetSuffixTxBytes: &n.TxBytes, golibvirt.DomainStatsNetSuffixTxPkts: &n.TxPkts, golibvirt.DomainStatsNetSuffixTxDrop: &n.TxDrop,
-			}[suffix]
-			if counter != nil && isUint {
-				*counter = v
-				if suffix == golibvirt.DomainStatsNetSuffixRxBytes || suffix == golibvirt.DomainStatsNetSuffixTxBytes {
-					hasBytes["net."+strconv.Itoa(i)] = true
-				}
+			case golibvirt.DomainStatsNetSuffixRxBytes:
+				n.RxBytes = counter
+			case golibvirt.DomainStatsNetSuffixRxPkts:
+				n.RxPkts = counter
+			case golibvirt.DomainStatsNetSuffixRxDrop:
+				n.RxDrop = counter
+			case golibvirt.DomainStatsNetSuffixTxBytes:
+				n.TxBytes = counter
+			case golibvirt.DomainStatsNetSuffixTxPkts:
+				n.TxPkts = counter
+			case golibvirt.DomainStatsNetSuffixTxDrop:
+				n.TxDrop = counter
 			}
 			continue
 		}
@@ -155,32 +175,30 @@ func ParseDomainStats(rec golibvirt.DomainStatsRecord) DomainStats {
 				d = &DiskStats{}
 				disks[i] = d
 			}
-			if suffix == golibvirt.DomainStatsBlockSuffixName {
-				if name, ok := p.Value.I.(string); ok {
+			switch suffix {
+			case golibvirt.DomainStatsBlockSuffixName:
+				if isString {
 					d.Name = cleanDeviceName(name)
 				}
-				continue
-			}
-			counter := map[string]*uint64{
-				golibvirt.DomainStatsBlockSuffixRdBytes: &d.RdBytes, golibvirt.DomainStatsBlockSuffixRdReqs: &d.RdReqs,
-				golibvirt.DomainStatsBlockSuffixWrBytes: &d.WrBytes, golibvirt.DomainStatsBlockSuffixWrReqs: &d.WrReqs,
-			}[suffix]
-			if counter != nil && isUint {
-				*counter = v
-				if suffix == golibvirt.DomainStatsBlockSuffixRdBytes || suffix == golibvirt.DomainStatsBlockSuffixWrBytes {
-					hasBytes["block."+strconv.Itoa(i)] = true
-				}
+			case golibvirt.DomainStatsBlockSuffixRdBytes:
+				d.RdBytes = counter
+			case golibvirt.DomainStatsBlockSuffixRdReqs:
+				d.RdReqs = counter
+			case golibvirt.DomainStatsBlockSuffixWrBytes:
+				d.WrBytes = counter
+			case golibvirt.DomainStatsBlockSuffixWrReqs:
+				d.WrReqs = counter
 			}
 		}
 	}
 
 	for _, i := range sortedKeys(nics) {
-		if hasBytes["net."+strconv.Itoa(i)] {
+		if nics[i].reported() {
 			s.NICs = append(s.NICs, *nics[i])
 		}
 	}
 	for _, i := range sortedKeys(disks) {
-		if hasBytes["block."+strconv.Itoa(i)] && disks[i].Name != "" {
+		if disks[i].reported() && disks[i].Name != "" {
 			s.Disks = append(s.Disks, *disks[i])
 		}
 	}
@@ -189,10 +207,11 @@ func ParseDomainStats(rec golibvirt.DomainStatsRecord) DomainStats {
 	return s
 }
 
-// AllDomainStats reads every domain with one call. Shut-off domains come back
-// with their state only. NICs have no MAC yet: StatsReader adds it.
-func AllDomainStats(l StatsAPI) ([]DomainStats, error) {
-	recs, err := l.ConnectGetAllDomainStats(nil, AllStatsGroups, 0)
+// AllDomainStats reads every domain with one call. A shut-off domain has its
+// state, balloon and vCPU gauges but no CPU time and no device counters. NICs
+// have no MAC yet: StatsReader adds it.
+func AllDomainStats(l StatsAPI, flags uint32) ([]DomainStats, error) {
+	recs, err := l.ConnectGetAllDomainStats(nil, AllStatsGroups, flags)
 	if err != nil {
 		return nil, err
 	}
@@ -205,9 +224,11 @@ func AllDomainStats(l StatsAPI) ([]DomainStats, error) {
 }
 
 // InfoDomainStats reads every domain with calls of its own, for drivers
-// without ConnectGetAllDomainStats. A domain that vanishes while it is read
-// is left out; a statistic the driver refuses is absent. An error that is not
-// libvirt's (the connection) fails the whole reading.
+// without ConnectGetAllDomainStats, in the shape AllDomainStats gives. A
+// domain that vanishes while it is read is left out, and a statistic the
+// driver refuses for a domain (no balloon, empty CD-ROM) is absent. Any other
+// error fails the whole reading, for every domain, as the single call would:
+// a VM is never missing from a reading because of an error.
 func InfoDomainStats(l StatsAPI) ([]DomainStats, error) {
 	doms, _, err := l.ConnectListAllDomains(1, 0)
 	if err != nil {
@@ -220,43 +241,41 @@ func InfoDomainStats(l StatsAPI) ([]DomainStats, error) {
 		switch {
 		case err == nil:
 			out = append(out, s)
-		case !isLibvirtError(err):
+		case !IsNotFound(err):
 			return nil, err
 		}
 	}
 	return out, nil
 }
 
-// infoDomainStats returns a libvirt error only when dom is gone.
+// infoDomainStats reads dom; an error that IsNotFound means dom is gone.
 func infoDomainStats(l StatsAPI, dom golibvirt.Domain) (DomainStats, error) {
 	state, _, memory, vcpus, cpuTime, err := l.DomainGetInfo(dom)
 	if err != nil {
 		return DomainStats{}, err
 	}
 
-	s := DomainStats{UUID: uuid.UUID(dom.UUID).String(), Name: cleanText(dom.Name, maxNameLen), State: StateName(golibvirt.DomainState(state)), dom: dom}
+	n := int(vcpus)
+	s := DomainStats{
+		UUID:           uuid.UUID(dom.UUID).String(),
+		Name:           cleanText(dom.Name, maxNameLen),
+		State:          StateName(golibvirt.DomainState(state)),
+		VCPUs:          &n,
+		MemAssignedKiB: &memory,
+		dom:            dom,
+	}
 	switch golibvirt.DomainState(state) {
 	case golibvirt.DomainRunning, golibvirt.DomainBlocked, golibvirt.DomainPaused, golibvirt.DomainShutdown, golibvirt.DomainPmsuspended:
 	default:
 		return s, nil
 	}
+	s.CPUTimeNs = &cpuTime
 
-	n := int(vcpus)
-	s.CPUTimeNs, s.VCPUs, s.MemAssignedKiB = &cpuTime, &n, &memory
-
-	// optional reads: a libvirt error leaves them out, unless dom is gone
-	optional := func(err error) (gone bool, fatal error) {
-		if err == nil {
-			return false, nil
-		}
-		if !isLibvirtError(err) || IsNotFound(err) {
-			return true, err
-		}
-		return false, nil
-	}
+	// a libvirt error on these leaves the statistic out, unless dom is gone
+	stop := func(err error) bool { return err != nil && (!isLibvirtError(err) || IsNotFound(err)) }
 
 	mem, err := l.DomainMemoryStats(dom, uint32(golibvirt.DomainMemoryStatNr), 0)
-	if stop, err := optional(err); stop {
+	if stop(err) {
 		return DomainStats{}, err
 	}
 	for _, m := range mem {
@@ -271,7 +290,7 @@ func infoDomainStats(l StatsAPI, dom golibvirt.Domain) (DomainStats, error) {
 	}
 
 	desc, err := l.DomainGetXMLDesc(dom, 0)
-	if stop, err := optional(err); stop {
+	if stop(err) {
 		return DomainStats{}, err
 	}
 	if err != nil {
@@ -284,29 +303,28 @@ func infoDomainStats(l StatsAPI, dom golibvirt.Domain) (DomainStats, error) {
 
 	for _, target := range d.Targets {
 		rdReq, rdBytes, wrReq, wrBytes, _, err := l.DomainBlockStats(dom, target)
-		if stop, err := optional(err); stop {
+		if stop(err) {
 			return DomainStats{}, err
 		}
-		name := cleanDeviceName(target)
-		if err != nil || name == "" || (rdBytes < 0 && wrBytes < 0) {
-			continue
+		disk := DiskStats{Name: cleanDeviceName(target), RdBytes: opt(rdBytes), RdReqs: opt(rdReq), WrBytes: opt(wrBytes), WrReqs: opt(wrReq)}
+		if err == nil && disk.Name != "" && disk.reported() {
+			s.Disks = append(s.Disks, disk)
 		}
-		s.Disks = append(s.Disks, DiskStats{Name: name, RdBytes: pos(rdBytes), RdReqs: pos(rdReq), WrBytes: pos(wrBytes), WrReqs: pos(wrReq)})
 	}
 
-	for i, nic := range d.NICs {
-		mac := canonicalMAC(nic.MAC)
+	for i, x := range d.NICs {
+		mac := canonicalMAC(x.MAC)
 		if mac == "" {
 			continue // libvirt finds a NIC by its MAC
 		}
-		rxB, rxP, _, rxD, txB, txP, _, txD, err := l.DomainInterfaceStats(dom, nic.MAC)
-		if stop, err := optional(err); stop {
+		rxB, rxP, _, rxD, txB, txP, _, txD, err := l.DomainInterfaceStats(dom, x.MAC)
+		if stop(err) {
 			return DomainStats{}, err
 		}
-		if err != nil || (rxB < 0 && txB < 0) {
-			continue
+		nic := NICStats{Index: i, MAC: mac, RxBytes: opt(rxB), RxPkts: opt(rxP), RxDrop: opt(rxD), TxBytes: opt(txB), TxPkts: opt(txP), TxDrop: opt(txD)}
+		if err == nil && nic.reported() {
+			s.NICs = append(s.NICs, nic)
 		}
-		s.NICs = append(s.NICs, NICStats{Index: i, MAC: mac, RxBytes: pos(rxB), RxPkts: pos(rxP), RxDrop: pos(rxD), TxBytes: pos(txB), TxPkts: pos(txP), TxDrop: pos(txD)})
 	}
 
 	capDevices(&s)
@@ -316,14 +334,15 @@ func infoDomainStats(l StatsAPI, dom golibvirt.Domain) (DomainStats, error) {
 
 // StatsReader reads all domains, with one call when the driver has
 // ConnectGetAllDomainStats and with calls per domain when it does not, which
-// it finds out once per connection.
+// it finds out once per connection. Call Reset on every new connection
+// (Conn.OnConnect).
 type StatsReader struct {
 	// OnFallback is told, once per connection, why the calls per domain are used.
 	OnFallback func(error)
 
 	mu       sync.Mutex
-	conn     StatsAPI
 	fallback bool
+	noWait   bool               // StatsNoWait refused: an old libvirt or the test driver
 	macs     map[string]nicMACs // by UUID
 }
 
@@ -334,17 +353,21 @@ type nicMACs struct {
 	macs []string
 }
 
+// Reset forgets what was learnt of the previous connection.
+func (r *StatsReader) Reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.fallback, r.noWait, r.macs = false, false, nil
+}
+
 // Read reads every domain on l.
 func (r *StatsReader) Read(l StatsAPI) ([]DomainStats, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.conn != l {
-		r.conn, r.fallback, r.macs = l, false, nil
-	}
-
 	if !r.fallback {
-		out, err := AllDomainStats(l)
+		out, err := r.readAll(l)
 		if err == nil {
 			r.addMACs(l, out)
 			return out, nil
@@ -359,6 +382,17 @@ func (r *StatsReader) Read(l StatsAPI) ([]DomainStats, error) {
 	}
 
 	return InfoDomainStats(l)
+}
+
+func (r *StatsReader) readAll(l StatsAPI) ([]DomainStats, error) {
+	if !r.noWait {
+		out, err := AllDomainStats(l, StatsNoWait)
+		if !IsUnsupportedFlags(err) {
+			return out, err
+		}
+		r.noWait = true
+	}
+	return AllDomainStats(l, 0)
 }
 
 // addMACs gives the NICs their MAC. libvirt numbers a domain's net.N in the
@@ -376,7 +410,10 @@ func (r *StatsReader) addMACs(l StatsAPI, all []DomainStats) {
 
 		var key strings.Builder
 		for _, n := range s.NICs {
-			key.WriteString(strconv.Itoa(n.Index) + "=" + n.ifname + "\x00")
+			key.WriteString(strconv.Itoa(n.Index))
+			key.WriteByte('=')
+			key.WriteString(n.ifname)
+			key.WriteByte(0)
 		}
 
 		cached, ok := r.macs[s.UUID]
@@ -472,11 +509,9 @@ func ptrIf(v uint64, ok bool) *uint64 {
 	return &v
 }
 
-func pos(v int64) uint64 {
-	if v < 0 {
-		return 0
-	}
-	return uint64(v)
+// opt is a counter of the per-domain calls, where -1 means not reported.
+func opt(v int64) *uint64 {
+	return ptrIf(uint64(v), v >= 0)
 }
 
 // deviceKey splits "net.3.rx.bytes" into 3 and ".rx.bytes".

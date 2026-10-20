@@ -6,7 +6,10 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	golibvirt "github.com/digitalocean/go-libvirt"
 	"github.com/google/uuid"
@@ -23,11 +26,30 @@ func tp(field string, v any) golibvirt.TypedParam {
 	return golibvirt.TypedParam{Field: field, Value: golibvirt.TypedParamValue{I: v}}
 }
 
+// show prints a counter: "-" when absent.
+func show(p *uint64) string {
+	if p == nil {
+		return "-"
+	}
+	return strconv.FormatUint(*p, 10)
+}
+
+func showNIC(n NICStats) string {
+	return fmt.Sprintf("%d %s rx %s/%s/%s tx %s/%s/%s", n.Index, n.ID(), show(n.RxBytes), show(n.RxPkts), show(n.RxDrop), show(n.TxBytes), show(n.TxPkts), show(n.TxDrop))
+}
+
+func showDisk(d DiskStats) string {
+	return fmt.Sprintf("%s rd %s/%s wr %s/%s", d.Name, show(d.RdBytes), show(d.RdReqs), show(d.WrBytes), show(d.WrReqs))
+}
+
 func TestAllStatsGroups(t *testing.T) {
 	want := uint32(golibvirt.DomainStatsState | golibvirt.DomainStatsCPUTotal | golibvirt.DomainStatsBalloon |
 		golibvirt.DomainStatsVCPU | golibvirt.DomainStatsInterface | golibvirt.DomainStatsBlock)
 	if AllStatsGroups != want {
 		t.Errorf("AllStatsGroups = %d, want %d", AllStatsGroups, want)
+	}
+	if StatsNoWait != 1<<29 {
+		t.Errorf("StatsNoWait = %d", StatsNoWait)
 	}
 }
 
@@ -49,13 +71,15 @@ func TestParseDomainStatsFull(t *testing.T) {
 		tp("balloon.unused", uint64(400000)),
 		tp("balloon.usable", uint64(500000)),
 		tp("balloon.rss", uint64(900000)),
-		tp("net.count", uint32(1)),
+		tp("net.count", uint32(2)),
 		tp("net.0.name", "vnet3"),
 		tp("net.0.rx.bytes", uint64(100)),
-		tp("net.0.tx.bytes", uint64(200)),
+		tp("net.0.rx.pkts", uint64(3)),
 		tp("net.0.rx.drop", uint64(1)),
-		tp("net.1.name", "vnet4"),
-		tp("net.1.rx.drop", uint64(1)),
+		tp("net.0.tx.bytes", uint64(200)),
+		tp("net.0.tx.pkts", uint64(4)),
+		tp("net.0.tx.drop", uint64(0)),
+		tp("net.1.name", "vnet4"), // no counter
 		tp("net.5000.rx.bytes", uint64(1)),
 		tp("block.count", uint32(2)),
 		tp("block.0.name", "vda"),
@@ -75,32 +99,62 @@ func TestParseDomainStatsFull(t *testing.T) {
 	if s.VCPUs == nil || *s.VCPUs != 2 {
 		t.Errorf("VCPUs %v", s.VCPUs)
 	}
-	for name, got := range map[string]*uint64{"assigned": s.MemAssignedKiB, "available": s.MemAvailableKiB, "unused": s.MemUnusedKiB, "usable": s.MemUsableKiB} {
-		want := map[string]uint64{"assigned": 1048576, "available": 1000000, "unused": 400000, "usable": 500000}[name]
-		if got == nil || *got != want {
-			t.Errorf("memory %s %v, want %d", name, got, want)
-		}
+	if got := show(s.MemAssignedKiB) + " " + show(s.MemAvailableKiB) + " " + show(s.MemUnusedKiB) + " " + show(s.MemUsableKiB); got != "1048576 1000000 400000 500000" {
+		t.Errorf("memory %s", got)
 	}
-	if len(s.NICs) != 1 {
-		t.Fatalf("NICs %+v", s.NICs)
+	if len(s.NICs) != 1 || showNIC(s.NICs[0]) != "0 nic0 rx 100/3/1 tx 200/4/0" {
+		t.Errorf("NICs %d %v", len(s.NICs), s.NICs)
 	}
-	n := s.NICs[0]
-	if n.Index != 0 || n.RxBytes != 100 || n.TxBytes != 200 || n.RxDrop != 1 || n.TxDrop != 0 {
-		t.Errorf("NIC %+v", n)
-	}
-	if len(s.Disks) != 1 || s.Disks[0] != (DiskStats{Name: "vda", RdBytes: 10, WrBytes: 20, RdReqs: 1, WrReqs: 2}) {
+	if len(s.Disks) != 1 || showDisk(s.Disks[0]) != "vda rd 10/1 wr 20/2" {
 		t.Errorf("Disks %+v", s.Disks)
 	}
 }
 
+func TestParseDomainStatsPartialCounters(t *testing.T) {
+	// an OVS or vhost-user NIC: libvirt leaves out the counters it lacks
+	first := ParseDomainStats(golibvirt.DomainStatsRecord{Params: []golibvirt.TypedParam{
+		tp("net.0.rx.bytes", uint64(100)), tp("net.0.tx.bytes", uint64(200)),
+		tp("block.0.name", "vda"), tp("block.0.rd.reqs", uint64(7)),
+	}})
+	if len(first.NICs) != 1 || showNIC(first.NICs[0]) != "0 nic0 rx 100/-/- tx 200/-/-" {
+		t.Errorf("first NICs %v", first.NICs)
+	}
+	if len(first.Disks) != 1 || showDisk(first.Disks[0]) != "vda rd -/7 wr -/-" {
+		t.Errorf("first disks %v", first.Disks)
+	}
+
+	// a counter that appears later is present from then on
+	second := ParseDomainStats(golibvirt.DomainStatsRecord{Params: []golibvirt.TypedParam{
+		tp("net.0.rx.bytes", uint64(150)), tp("net.0.tx.bytes", uint64(250)), tp("net.0.rx.drop", uint64(2)),
+	}})
+	if len(second.NICs) != 1 || showNIC(second.NICs[0]) != "0 nic0 rx 150/-/2 tx 250/-/-" {
+		t.Errorf("second NICs %v", second.NICs)
+	}
+}
+
 func TestParseDomainStatsShutOff(t *testing.T) {
-	s := ParseDomainStats(golibvirt.DomainStatsRecord{Dom: testDom(t, "off"), Params: []golibvirt.TypedParam{tp("state.state", int32(5))}})
+	// what QEMU answers for a shut-off domain with flags 0
+	s := ParseDomainStats(golibvirt.DomainStatsRecord{Dom: testDom(t, "off"), Params: []golibvirt.TypedParam{
+		tp("state.state", int32(5)),
+		tp("state.reason", int32(1)),
+		tp("balloon.current", uint64(2097152)),
+		tp("balloon.maximum", uint64(2097152)),
+		tp("vcpu.current", uint32(2)),
+		tp("vcpu.maximum", uint32(2)),
+		tp("block.count", uint32(2)),
+		tp("block.0.name", "vda"),
+		tp("block.0.path", "/DATA/VM/a.qcow2"),
+		tp("block.1.name", "sda"),
+	}})
 
 	if s.State != StateShutOff {
 		t.Errorf("State %q", s.State)
 	}
-	if s.CPUTimeNs != nil || s.VCPUs != nil || s.MemAssignedKiB != nil || s.MemAvailableKiB != nil || s.MemUnusedKiB != nil || s.MemUsableKiB != nil {
-		t.Errorf("pointers set: %+v", s)
+	if s.MemAssignedKiB == nil || *s.MemAssignedKiB != 2097152 || s.VCPUs == nil || *s.VCPUs != 2 {
+		t.Errorf("gauges %s %v", show(s.MemAssignedKiB), s.VCPUs)
+	}
+	if s.CPUTimeNs != nil || s.MemAvailableKiB != nil || s.MemUnusedKiB != nil || s.MemUsableKiB != nil {
+		t.Errorf("counters set: %+v", s)
 	}
 	if len(s.NICs) != 0 || len(s.Disks) != 0 {
 		t.Errorf("devices %+v %+v", s.NICs, s.Disks)
@@ -173,8 +227,8 @@ func TestParseDomainStatsHostileText(t *testing.T) {
 	if got := strings.Join(names, ","); got != "vda,"+strings.Repeat("x", maxDeviceNameLen) {
 		t.Errorf("disks %q", got)
 	}
-	if s.Disks[0].RdBytes != 1 {
-		t.Errorf("first vda wins: %+v", s.Disks[0])
+	if show(s.Disks[0].RdBytes) != "1" {
+		t.Errorf("first vda wins: %s", showDisk(s.Disks[0]))
 	}
 	if len(s.NICs) != 0 {
 		t.Errorf("NICs %+v", s.NICs)
@@ -239,8 +293,12 @@ func TestNICStatsID(t *testing.T) {
 type fakeLibvirt struct {
 	records  []golibvirt.DomainStatsRecord
 	allErr   error
+	noNoWait bool // refuses StatsNoWait as an old libvirt does
 	allCalls int
 	allArgs  [][2]uint32
+	inFlight atomic.Int32
+	maxIn    atomic.Int32
+	delay    time.Duration
 
 	doms    []golibvirt.Domain
 	listErr error
@@ -257,10 +315,19 @@ type fakeLibvirt struct {
 }
 
 func (f *fakeLibvirt) ConnectGetAllDomainStats(doms []golibvirt.Domain, groups, flags uint32) ([]golibvirt.DomainStatsRecord, error) {
+	if n := f.inFlight.Add(1); n > f.maxIn.Load() {
+		f.maxIn.Store(n)
+	}
+	defer f.inFlight.Add(-1)
+	time.Sleep(f.delay)
+
 	f.allCalls++
 	f.allArgs = append(f.allArgs, [2]uint32{groups, flags})
 	if doms != nil {
 		return nil, errors.New("doms should be nil")
+	}
+	if f.noNoWait && flags&StatsNoWait != 0 {
+		return nil, golibvirt.Error{Code: uint32(golibvirt.ErrInvalidArg), Message: "unsupported flags (0x20000000) in function virConnectGetAllDomainStats"}
 	}
 	return f.records, f.allErr
 }
@@ -336,7 +403,7 @@ func TestStatsReaderOneCallWithStableNICIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.allCalls != 1 || f.allArgs[0] != [2]uint32{AllStatsGroups, 0} {
+	if f.allCalls != 1 || f.allArgs[0] != [2]uint32{AllStatsGroups, StatsNoWait} {
 		t.Errorf("calls %d %v", f.allCalls, f.allArgs)
 	}
 	if len(got) != 1 || len(got[0].NICs) != 2 || got[0].NICs[0].ID() != "52:54:00:aa:bb:cc" || got[0].NICs[1].ID() != "nic1" {
@@ -357,6 +424,26 @@ func TestStatsReaderOneCallWithStableNICIDs(t *testing.T) {
 	got, _ = r.Read(f)
 	if f.xmlCall != 2 || got[0].NICs[0].ID() != "52:54:00:dd:ee:ff" {
 		t.Errorf("xml calls %d, %+v", f.xmlCall, got[0].NICs)
+	}
+}
+
+func TestStatsReaderNoWaitRefused(t *testing.T) {
+	f := &fakeLibvirt{noNoWait: true, records: []golibvirt.DomainStatsRecord{{Dom: testDom(t, "x")}}}
+	var r StatsReader
+
+	for range 2 {
+		if got, err := r.Read(f); err != nil || len(got) != 1 {
+			t.Fatalf("%+v %v", got, err)
+		}
+	}
+	if fmt.Sprint(f.allArgs) != fmt.Sprintf("[[63 %d] [63 0] [63 0]]", StatsNoWait) {
+		t.Errorf("calls %v", f.allArgs)
+	}
+
+	r.Reset()
+	_, _ = r.Read(f)
+	if f.allArgs[3][1] != StatsNoWait {
+		t.Errorf("after Reset %v", f.allArgs)
 	}
 }
 
@@ -414,10 +501,38 @@ func TestStatsReaderFallsBackOncePerConnection(t *testing.T) {
 		}
 
 		// a new connection is probed again
-		g := &fakeLibvirt{records: []golibvirt.DomainStatsRecord{{Dom: testDom(t, "x")}}}
-		if got, err := r.Read(g); err != nil || len(got) != 1 || g.allCalls != 1 {
-			t.Errorf("%v: after reconnect %+v %v, %d calls", code, got, err, g.allCalls)
+		r.Reset()
+		f.allErr, f.records = nil, []golibvirt.DomainStatsRecord{{Dom: testDom(t, "x")}}
+		if got, err := r.Read(f); err != nil || len(got) != 1 || got[0].Name != "x" || f.allCalls != 2 {
+			t.Errorf("%v: after Reset %+v %v, %d calls", code, got, err, f.allCalls)
 		}
+	}
+}
+
+func TestStatsReaderConcurrentReads(t *testing.T) {
+	f := &fakeLibvirt{records: []golibvirt.DomainStatsRecord{webRecord(t, "vnet3", 1)}, xml: map[string]string{"web": webXML}, delay: time.Millisecond}
+	var r StatsReader
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			for range 5 {
+				if _, err := r.Read(f); err != nil {
+					t.Error(err)
+				}
+			}
+		})
+	}
+	wg.Go(func() {
+		for range 5 {
+			r.Reset()
+			time.Sleep(time.Millisecond)
+		}
+	})
+	wg.Wait()
+
+	if f.maxIn.Load() != 1 || f.allCalls != 40 {
+		t.Errorf("%d reads at once, %d calls", f.maxIn.Load(), f.allCalls)
 	}
 }
 
@@ -441,7 +556,7 @@ func TestInfoDomainStats(t *testing.T) {
 		memErr: map[string]error{"late": lerr(golibvirt.ErrNoDomain), "plain": lerr(golibvirt.ErrNoSupport)},
 		xml:    map[string]string{"web": webXML},
 		xmlErr: map[string]error{"plain": lerr(golibvirt.ErrInternalError)},
-		block:  map[string][4]int64{"web/vda": {1, 512, 2, 1024}, "web/sdb": {-1, -1, -1, -1}},
+		block:  map[string][4]int64{"web/vda": {1, 512, -1, 1024}, "web/sdb": {-1, -1, -1, -1}},
 		iface:  map[string][6]int64{"web/52:54:00:AA:BB:CC": {10, 1, 0, 20, 2, -1}, "web/52:54:00:00:00:01": {-1, -1, -1, -1, -1, -1}},
 		devErr: map[string]error{"web/sda": lerr(golibvirt.ErrOperationInvalid)},
 	}
@@ -458,18 +573,20 @@ func TestInfoDomainStats(t *testing.T) {
 	if web.UUID != testUUID || web.State != StateRunning || *web.CPUTimeNs != 7_000_000_000 || *web.VCPUs != 2 || *web.MemAssignedKiB != 2097152 {
 		t.Errorf("web %+v", web)
 	}
-	if *web.MemAvailableKiB != 2000000 || *web.MemUnusedKiB != 500000 || *web.MemUsableKiB != 600000 {
-		t.Errorf("web balloon %d %d %d", *web.MemAvailableKiB, *web.MemUnusedKiB, *web.MemUsableKiB)
+	if got := show(web.MemAvailableKiB) + " " + show(web.MemUnusedKiB) + " " + show(web.MemUsableKiB); got != "2000000 500000 600000" {
+		t.Errorf("web balloon %s", got)
 	}
-	if len(web.Disks) != 1 || web.Disks[0] != (DiskStats{Name: "vda", RdReqs: 1, RdBytes: 512, WrReqs: 2, WrBytes: 1024}) {
-		t.Errorf("web disks %+v", web.Disks)
+	// -1 is not reported
+	if len(web.Disks) != 1 || showDisk(web.Disks[0]) != "vda rd 512/1 wr 1024/-" {
+		t.Errorf("web disks %v", web.Disks)
 	}
-	if len(web.NICs) != 1 || web.NICs[0].ID() != "52:54:00:aa:bb:cc" || web.NICs[0].RxBytes != 10 || web.NICs[0].TxBytes != 20 || web.NICs[0].TxDrop != 0 {
-		t.Errorf("web NICs %+v", web.NICs)
+	if len(web.NICs) != 1 || showNIC(web.NICs[0]) != "0 52:54:00:aa:bb:cc rx 10/1/0 tx 20/2/-" {
+		t.Errorf("web NICs %v", web.NICs)
 	}
 
+	// the shape a shut-off domain has in ConnectGetAllDomainStats
 	off := got[1]
-	if off.State != StateShutOff || off.CPUTimeNs != nil || off.MemAssignedKiB != nil || len(off.NICs)+len(off.Disks) != 0 {
+	if off.State != StateShutOff || off.CPUTimeNs != nil || show(off.MemAssignedKiB) != "4194304" || off.VCPUs == nil || *off.VCPUs != 2 || len(off.NICs)+len(off.Disks) != 0 {
 		t.Errorf("off %+v", off)
 	}
 
@@ -479,27 +596,33 @@ func TestInfoDomainStats(t *testing.T) {
 	}
 }
 
-func TestInfoDomainStatsFailsOnTransportErrors(t *testing.T) {
+func TestInfoDomainStatsFailsOnErrors(t *testing.T) {
 	down := errors.New("connection reset")
+	internal := lerr(golibvirt.ErrInternalError)
 	base := func() *fakeLibvirt {
 		return &fakeLibvirt{
-			doms: []golibvirt.Domain{testDom(t, "web")},
-			info: map[string][5]uint64{"web": {1, 1, 1, 1, 1}},
+			doms: []golibvirt.Domain{testDom(t, "ok"), testDom(t, "web")},
+			info: map[string][5]uint64{"ok": {5}, "web": {1, 1, 1, 1, 1}},
 			xml:  map[string]string{"web": webXML},
 		}
 	}
-	for name, f := range map[string]func(*fakeLibvirt){
-		"list":  func(f *fakeLibvirt) { f.listErr = down },
-		"info":  func(f *fakeLibvirt) { f.infoErr = map[string]error{"web": down} },
-		"mem":   func(f *fakeLibvirt) { f.memErr = map[string]error{"web": down} },
-		"xml":   func(f *fakeLibvirt) { f.xmlErr = map[string]error{"web": down} },
-		"block": func(f *fakeLibvirt) { f.devErr = map[string]error{"web/vda": down} },
-		"iface": func(f *fakeLibvirt) { f.devErr = map[string]error{"web/52:54:00:AA:BB:CC": down} },
+	for name, c := range map[string]struct {
+		set  func(*fakeLibvirt)
+		want error
+	}{
+		"list":          {func(f *fakeLibvirt) { f.listErr = down }, down},
+		"info":          {func(f *fakeLibvirt) { f.infoErr = map[string]error{"web": down} }, down},
+		"info internal": {func(f *fakeLibvirt) { f.infoErr = map[string]error{"web": internal} }, internal},
+		"mem":           {func(f *fakeLibvirt) { f.memErr = map[string]error{"web": down} }, down},
+		"xml":           {func(f *fakeLibvirt) { f.xmlErr = map[string]error{"web": down} }, down},
+		"block":         {func(f *fakeLibvirt) { f.devErr = map[string]error{"web/vda": down} }, down},
+		"iface":         {func(f *fakeLibvirt) { f.devErr = map[string]error{"web/52:54:00:AA:BB:CC": down} }, down},
 	} {
 		l := base()
-		f(l)
-		if _, err := InfoDomainStats(l); !errors.Is(err, down) {
-			t.Errorf("%s: %v", name, err)
+		c.set(l)
+		// the whole reading fails, the other domain with it
+		if got, err := InfoDomainStats(l); !errors.Is(err, c.want) || got != nil {
+			t.Errorf("%s: %v %+v", name, err, got)
 		}
 	}
 }

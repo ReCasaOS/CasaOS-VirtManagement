@@ -339,6 +339,9 @@ func infoDomainStats(l StatsAPI, dom golibvirt.Domain) (DomainStats, error) {
 type StatsReader struct {
 	// OnFallback is told, once per connection, why the calls per domain are used.
 	OnFallback func(error)
+	// OnNoWaitRefused is told, once per connection, why StatsNoWait is no
+	// longer asked.
+	OnNoWaitRefused func(error)
 
 	mu       sync.Mutex
 	fallback bool
@@ -385,14 +388,37 @@ func (r *StatsReader) Read(l StatsAPI) ([]DomainStats, error) {
 }
 
 func (r *StatsReader) readAll(l StatsAPI) ([]DomainStats, error) {
-	if !r.noWait {
-		out, err := AllDomainStats(l, StatsNoWait)
-		if !IsUnsupportedFlags(err) {
-			return out, err
-		}
-		r.noWait = true
+	if r.noWait {
+		return AllDomainStats(l, 0)
 	}
-	return AllDomainStats(l, 0)
+	out, err := AllDomainStats(l, StatsNoWait)
+	if !refusesFlag(err) {
+		return out, err
+	}
+	out, retryErr := AllDomainStats(l, 0)
+	if retryErr != nil {
+		return nil, retryErr
+	}
+	r.noWait = true
+	if r.OnNoWaitRefused != nil {
+		r.OnNoWaitRefused(err)
+	}
+	return out, nil
+}
+
+// refusesFlag: how libvirt (old ones, other drivers) refuses a flag it does
+// not know.
+func refusesFlag(err error) bool {
+	var lerr golibvirt.Error
+	if !errors.As(err, &lerr) {
+		return false
+	}
+
+	switch golibvirt.ErrorNumber(lerr.Code) {
+	case golibvirt.ErrInvalidArg, golibvirt.ErrNoSupport, golibvirt.ErrOperationInvalid, golibvirt.ErrArgumentUnsupported:
+		return true
+	}
+	return false
 }
 
 // addMACs gives the NICs their MAC. libvirt numbers a domain's net.N in the

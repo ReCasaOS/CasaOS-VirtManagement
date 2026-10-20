@@ -291,14 +291,15 @@ func TestNICStatsID(t *testing.T) {
 
 // fakeLibvirt answers the stats calls from fixed data, keyed by domain name.
 type fakeLibvirt struct {
-	records  []golibvirt.DomainStatsRecord
-	allErr   error
-	noNoWait bool // refuses StatsNoWait as an old libvirt does
-	allCalls int
-	allArgs  [][2]uint32
-	inFlight atomic.Int32
-	maxIn    atomic.Int32
-	delay    time.Duration
+	records   []golibvirt.DomainStatsRecord
+	allErr    error
+	noNoWait  bool  // refuses StatsNoWait as an old libvirt does
+	noWaitErr error // returned instead when set
+	allCalls  int
+	allArgs   [][2]uint32
+	inFlight  atomic.Int32
+	maxIn     atomic.Int32
+	delay     time.Duration
 
 	doms    []golibvirt.Domain
 	listErr error
@@ -325,6 +326,9 @@ func (f *fakeLibvirt) ConnectGetAllDomainStats(doms []golibvirt.Domain, groups, 
 	f.allArgs = append(f.allArgs, [2]uint32{groups, flags})
 	if doms != nil {
 		return nil, errors.New("doms should be nil")
+	}
+	if f.noWaitErr != nil && flags&StatsNoWait != 0 {
+		return nil, f.noWaitErr
 	}
 	if f.noNoWait && flags&StatsNoWait != 0 {
 		return nil, golibvirt.Error{Code: uint32(golibvirt.ErrInvalidArg), Message: "unsupported flags (0x20000000) in function virConnectGetAllDomainStats"}
@@ -447,6 +451,39 @@ func TestStatsReaderNoWaitRefused(t *testing.T) {
 	}
 }
 
+func TestStatsReaderNoWaitRefusedCodes(t *testing.T) {
+	for _, code := range []golibvirt.ErrorNumber{golibvirt.ErrInvalidArg, golibvirt.ErrNoSupport, golibvirt.ErrOperationInvalid, golibvirt.ErrArgumentUnsupported} {
+		f := &fakeLibvirt{noWaitErr: lerr(code), records: []golibvirt.DomainStatsRecord{{Dom: testDom(t, "x")}}}
+		var told []error
+		r := StatsReader{OnNoWaitRefused: func(err error) { told = append(told, err) }}
+
+		for range 2 {
+			if got, err := r.Read(f); err != nil || len(got) != 1 {
+				t.Fatalf("%d: %+v %v", code, got, err)
+			}
+		}
+		if fmt.Sprint(f.allArgs) != fmt.Sprintf("[[63 %d] [63 0] [63 0]]", StatsNoWait) || len(told) != 1 {
+			t.Errorf("%d: calls %v, told %v", code, f.allArgs, told)
+		}
+	}
+
+	// any other error is not a refusal of the flag
+	f := &fakeLibvirt{noWaitErr: lerr(golibvirt.ErrInternalError)}
+	var r StatsReader
+	if _, err := r.Read(f); err == nil || len(f.allArgs) != 1 {
+		t.Errorf("internal error: %v, calls %v", err, f.allArgs)
+	}
+
+	// the retry failing too: not remembered, the flag is asked again next time
+	f = &fakeLibvirt{noWaitErr: lerr(golibvirt.ErrInvalidArg), allErr: lerr(golibvirt.ErrInternalError)}
+	r = StatsReader{}
+	_, _ = r.Read(f)
+	_, _ = r.Read(f)
+	if fmt.Sprint(f.allArgs) != fmt.Sprintf("[[63 %d] [63 0] [63 %d] [63 0]]", StatsNoWait, StatsNoWait) {
+		t.Errorf("failed retry: calls %v", f.allArgs)
+	}
+}
+
 func TestStatsReaderUnreadableXMLDropsNICs(t *testing.T) {
 	f := &fakeLibvirt{records: []golibvirt.DomainStatsRecord{webRecord(t, "vnet3", 100)}, xmlErr: map[string]error{"web": lerr(golibvirt.ErrNoDomain)}}
 	var r StatsReader
@@ -496,14 +533,19 @@ func TestStatsReaderFallsBackOncePerConnection(t *testing.T) {
 				t.Fatalf("%v: %+v %v", code, got, err)
 			}
 		}
-		if f.allCalls != 1 || len(reasons) != 1 {
+		// a refusal that may be of StatsNoWait is first asked again without it
+		calls := 1
+		if code == golibvirt.ErrNoSupport || code == golibvirt.ErrArgumentUnsupported {
+			calls = 2
+		}
+		if f.allCalls != calls || len(reasons) != 1 {
 			t.Errorf("%v: %d calls, fallbacks %v", code, f.allCalls, reasons)
 		}
 
 		// a new connection is probed again
 		r.Reset()
 		f.allErr, f.records = nil, []golibvirt.DomainStatsRecord{{Dom: testDom(t, "x")}}
-		if got, err := r.Read(f); err != nil || len(got) != 1 || got[0].Name != "x" || f.allCalls != 2 {
+		if got, err := r.Read(f); err != nil || len(got) != 1 || got[0].Name != "x" || f.allCalls != calls+1 {
 			t.Errorf("%v: after Reset %+v %v, %d calls", code, got, err, f.allCalls)
 		}
 	}

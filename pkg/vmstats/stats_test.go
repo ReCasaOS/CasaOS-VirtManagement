@@ -127,7 +127,13 @@ func newRig(t *testing.T) *rig {
 		r.logs = append(r.logs, msg)
 		r.mu.Unlock()
 	}
-	t.Cleanup(func() { logError = old })
+	oldInfo := logInfo
+	logInfo = func(msg string, _ error) {
+		r.mu.Lock()
+		r.logs = append(r.logs, "info: "+msg)
+		r.mu.Unlock()
+	}
+	t.Cleanup(func() { logError, logInfo = old, oldInfo })
 	r.open()
 	return r
 }
@@ -584,6 +590,28 @@ func TestStatsListUnavailableWhileLibvirtIsDown(t *testing.T) {
 	r.tick(r.vm(vmA, 10))
 	if items, err := r.s.Items(); err != nil || len(items) != 1 {
 		t.Errorf("back: %v %v", items, err)
+	}
+}
+
+// At boot the sampler ticks before the background dial is done: a failure
+// before any success is not an outage, so not an error.
+func TestStatsNotReachedYetIsNotAnError(t *testing.T) {
+	r := newRig(t)
+	r.fail(Interval)
+	r.fail(Interval)
+	if n, i := r.logged("libvirt is unreachable"), r.logged("info: libvirt not reached yet"); n != 0 || i != 1 {
+		t.Errorf("before any success: %d errors, %d infos, want 0 and 1", n, i)
+	}
+	r.tick(r.vm(vmA, 10))
+	r.fail(Interval)
+	r.fail(Interval)
+	if n := r.logged("libvirt is unreachable"); n != 1 {
+		t.Errorf("after a success: %d errors, want 1", n)
+	}
+	r.tick(r.vm(vmA, 10))
+	r.fail(Interval)
+	if n, i := r.logged("libvirt is unreachable"), r.logged("info: libvirt not reached yet"); n != 2 || i != 1 {
+		t.Errorf("second outage: %d errors, %d infos, want 2 and 1", n, i)
 	}
 }
 

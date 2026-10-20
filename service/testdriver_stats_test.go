@@ -246,7 +246,10 @@ func TestDriverStatsLifecycle(t *testing.T) {
 	seen := make(chan vmstats.LifecycleEvent, 64)
 	events.OnLifecycle(func(ev vmstats.LifecycleEvent) {
 		st.HandleLifecycle(ev)
-		seen <- ev
+		select { // the hook must not block
+		case seen <- ev:
+		default:
+		}
 	})
 	go events.WatchLifecycle(t.Context(), l)
 	time.Sleep(time.Second) // subscribed
@@ -289,8 +292,8 @@ func TestDriverStatsLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	wait(golibvirt.DomainEventUndefined)
-	if _, active, err := st.Alerts("vm:" + id.String()); err == nil && len(active) != 0 {
-		t.Errorf("after delete: %v", active)
+	if _, active, err := st.Alerts("vm:" + id.String()); (err != nil && !errors.Is(err, ErrUnknownItem)) || len(active) != 0 {
+		t.Errorf("after delete: %v %v", active, err)
 	}
 
 	if err := st.Close(); err != nil {

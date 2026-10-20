@@ -52,6 +52,9 @@ var describeBudget = 2 * time.Second
 // logError is replaced by tests: the shared logger is not initialised there.
 var logError = func(msg string, err error) { logger.Error(msg, zap.Error(err)) }
 
+// logInfo is replaced by tests too.
+var logInfo = func(msg string, err error) { logger.Info(msg, zap.Error(err)) }
+
 // Source reads libvirt: every domain's statistics at once, and one domain's
 // title and description (or an OS hint).
 type Source interface {
@@ -166,6 +169,7 @@ type Stats struct {
 	forgets   map[string]bool // gone VMs to Forget; a failed one is tried again next tick
 	forget    func(item string, at time.Time) error
 	down      bool // the last snapshot failed and that was logged
+	reached   bool // a snapshot has succeeded since New
 	lastSweep time.Time
 
 	mu       sync.Mutex // guards the fields below
@@ -261,8 +265,12 @@ func (s *Stats) tick(ctx context.Context) {
 		}
 		// a gap: nothing recorded, resolved or forgotten (libvirtd away is not
 		// evidence that a VM stopped)
-		if !s.down {
+		switch {
+		case s.down:
+		case s.reached:
 			logError("libvirt is unreachable, VM statistics are paused", err)
+		default: // at boot the dial runs in the background
+			logInfo("libvirt not reached yet, VM statistics wait for it", err)
 		}
 		s.down = true
 		s.mu.Lock()
@@ -270,7 +278,7 @@ func (s *Stats) tick(ctx context.Context) {
 		s.mu.Unlock()
 		return
 	}
-	s.down = false
+	s.down, s.reached = false, true
 
 	s.mu.Lock()
 	refresh, starts := s.refresh, s.starts

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"go/format"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,5 +55,42 @@ func TestOpenStatsFailureIsNotFatal(t *testing.T) {
 		t.Fatal("statistics not opened in a new directory")
 	} else {
 		_ = st.Close()
+	}
+}
+
+// main cannot run in a test; this pins in its source, comments dropped, that
+// it registers the events, then opens the statistics through openStats (which
+// wires the lifecycle hook), dials libvirt, starts the sampler and serves it.
+func TestMainWiresTheStatisticsInOrder(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0) // no comments
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	if err := format.Node(&b, token.NewFileSet(), file); err != nil {
+		t.Fatal(err)
+	}
+	src := b.String()
+	body := src[strings.Index(src, "func main() {"):strings.Index(src, "\nfunc openStats(")]
+
+	last, lastCall := -1, ""
+	for _, call := range []string{
+		"events.Register(ctx)",
+		"openStats(config.StatsInfo.Path, events, conn)",
+		"go conn.Run(ctx)",
+		"sampling.Go(",
+		"route.InitV2Router(conn, vms, st)",
+	} {
+		i := strings.Index(body, call)
+		switch {
+		case i < 0:
+			t.Fatalf("main no longer calls %s", call)
+		case i < last:
+			t.Fatalf("main calls %s before %s", call, lastCall)
+		}
+		last, lastCall = i, call
+	}
+	if n := strings.Count(src, "service.NewStats("); n != 1 {
+		t.Errorf("service.NewStats called %d times: main must open the statistics through openStats only", n)
 	}
 }

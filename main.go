@@ -12,11 +12,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
 	"github.com/ReCasaOS/CasaOS-Common/model"
+	"github.com/ReCasaOS/CasaOS-Common/pkg/stats"
 	"github.com/ReCasaOS/CasaOS-Common/utils/file"
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS-VirtManagement/common"
@@ -80,6 +82,16 @@ func main() {
 	conn := libvirt.New(config.LibvirtSockets(), config.LibvirtInfo.URI)
 	events := service.NewEvents(config.CommonInfo.RuntimePath)
 
+	// register at message bus, before the statistics: the alerts they rebuild
+	// from their history are published as soon as they open
+	if err := events.Register(ctx); err != nil {
+		logger.Error("error when trying to register one or more event types - some event type will not be discoverable", zap.Error(err))
+	}
+
+	// opened, and wired to the lifecycle events, before libvirt is dialled, so
+	// no event is read without them
+	st := openStats(config.StatsInfo.Path, events, conn)
+
 	// on every (re)connection: make sure the storage pool is there, and follow
 	// the VMs' lifecycle
 	conn.OnConnect(func(_ context.Context, l *golibvirt.Libvirt) {
@@ -100,11 +112,6 @@ func main() {
 	vms.Downloads.CleanParts()
 	conn.OnConnect(vms.PrepareNetwork)
 	go vms.RunFirewall(ctx)
-
-	// register at message bus
-	if err := events.Register(ctx); err != nil {
-		logger.Error("error when trying to register one or more event types - some event type will not be discoverable", zap.Error(err))
-	}
 
 	// setup listener
 	listener, err := net.Listen("tcp", net.JoinHostPort(common.Localhost, "0"))
@@ -142,7 +149,16 @@ func main() {
 		}
 	}
 
-	v2Router := route.InitV2Router(conn, vms, nil)
+	// every VM's CPU, memory, network and disk every 5 s, and their alerts.
+	// While libvirt is away the list answers 503 and the sampler tries again
+	// at each tick. Run closes the history when ctx ends; main waits for it,
+	// so a stop loses at most the minute in progress.
+	var sampling sync.WaitGroup
+	if st != nil {
+		sampling.Go(func() { st.Run(ctx) })
+	}
+
+	v2Router := route.InitV2Router(conn, vms, st)
 	v2DocRouter := route.InitV2DocRouter(_docHTML, _docYAML)
 
 	mux := &util_http.HandlerMultiplexer{
@@ -185,4 +201,25 @@ func main() {
 	if err != nil && err != http.ErrServerClosed {
 		panic(err)
 	}
+
+	cancel()
+	sampling.Wait()
+}
+
+// openStats opens the VM statistics in dir, nil when they cannot be: their
+// routes then answer 503 and the rest of the service is unaffected.
+func openStats(dir string, events *service.Events, conn *libvirt.Conn) *service.Stats {
+	st, err := service.NewStats(service.StatsOptions{Dir: dir, Clock: stats.SystemClock{}, Source: service.NewConnSource(conn), Publisher: events})
+	if err != nil {
+		logger.Error("the VM statistics did not start, their routes answer 503", zap.String("path", dir), zap.Error(err))
+		return nil
+	}
+	wireStats(events, st)
+	return st
+}
+
+// wireStats hands the lifecycle events to the statistics: their crash alerts
+// come from them.
+func wireStats(events *service.Events, st *service.Stats) {
+	events.OnLifecycle(st.HandleLifecycle)
 }

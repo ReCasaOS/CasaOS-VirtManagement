@@ -18,7 +18,9 @@ import (
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS-VirtManagement/pkg/config"
 	"github.com/ReCasaOS/CasaOS-VirtManagement/pkg/libvirt"
+	"github.com/ReCasaOS/CasaOS-VirtManagement/pkg/vmstats"
 	"github.com/ReCasaOS/CasaOS-VirtManagement/service"
+	golibvirt "github.com/digitalocean/go-libvirt"
 )
 
 const (
@@ -178,8 +180,49 @@ func TestStatsListRoute(t *testing.T) {
 		}
 	}
 	idle := items[0]
-	if string(idle["state"]) != `"stopped"` || string(idle["cpu_percent"]) != "null" || string(idle["detail"]) != "null" {
-		t.Errorf("idle %v", idle)
+	for k, want := range map[string]string{
+		"state": `"stopped"`, "cpu_percent": "null", "detail": "null", "started_at": "null", "memory_used": "null", "memory_limit": "1073741824",
+	} {
+		if string(idle[k]) != want {
+			t.Errorf("idle %s = %s, want %s", k, idle[k], want)
+		}
+	}
+}
+
+// libvirtd away (not reached yet, or restarting): the list is unavailable, not
+// empty; the VMs' history is still served; it comes back with libvirt.
+func TestStatsListWhileLibvirtIsDown(t *testing.T) {
+	r := newStatsRig(t)
+	wantCode(t, r.do(http.MethodGet, "/stats"), http.StatusServiceUnavailable, "stats_unavailable", "before any snapshot")
+	r.ticks(2)
+	r.get("/stats", http.StatusOK)
+
+	r.src.mu.Lock()
+	r.src.err = errors.New("libvirt is down")
+	r.src.mu.Unlock()
+	r.ticks(1)
+	wantCode(t, r.do(http.MethodGet, "/stats"), http.StatusServiceUnavailable, "stats_unavailable", "outage")
+	r.get("/stats/"+vmID+"?range=live", http.StatusOK)
+
+	r.src.mu.Lock()
+	r.src.err = nil
+	r.src.mu.Unlock()
+	r.ticks(1)
+	r.get("/stats", http.StatusOK)
+}
+
+// A crash shows in the list's count and in the alerts, with no value.
+func TestStatsAlertsCrashed(t *testing.T) {
+	r := newStatsRig(t)
+	r.ticks(2)
+	r.s.HandleLifecycle(vmstats.LifecycleEvent{UUID: vmUUID, Name: "web", Event: golibvirt.DomainEventCrashed})
+	body := r.get("/stats/"+vmID+"/alerts", http.StatusOK)
+	if got := string(body["active"]); got != `[{"key":"vm_crashed","since":"2026-10-20T10:00:10Z","value":null}]` {
+		t.Errorf("active %s", got)
+	}
+	var list struct{ Items []service.StatsItem }
+	if err := json.Unmarshal(r.do(http.MethodGet, "/stats").Body.Bytes(), &list); err != nil || len(list.Items) != 2 || list.Items[1].Alerts != 1 {
+		t.Errorf("list %+v (%v)", list, err)
 	}
 }
 
@@ -342,6 +385,10 @@ func TestStatsUnavailable(t *testing.T) {
 	wantCode(t, recorder, http.StatusServiceUnavailable, "stats_unavailable", "failed save")
 	if err := os.Remove(tmp); err != nil {
 		t.Fatal(err)
+	}
+	// not sticky: the next save works
+	if code := r.send(http.MethodPut, "/stats/"+vmID+"/alerts", `{"rules":[{"key":"mem_high","enabled":true,"threshold":70,"minutes":2}]}`).Code; code != http.StatusOK {
+		t.Errorf("PUT after the failure: %d", code)
 	}
 
 	if err := r.s.Close(); err != nil {

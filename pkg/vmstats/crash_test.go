@@ -365,7 +365,7 @@ func TestCrashShownInItemsAndAlerts(t *testing.T) {
 	r.tick(r.vm(vmA, 10))
 	r.life(vmA, golibvirt.DomainEventCrashed, 0)
 	r.tick(crashedVM(vmA))
-	if it := r.s.Items(); len(it) != 1 || it[0].Alerts != 1 {
+	if it, _ := r.s.Items(); len(it) != 1 || it[0].Alerts != 1 {
 		t.Fatalf("items %+v", it)
 	}
 	_, active, err := r.s.Alerts("vm:" + vmA)

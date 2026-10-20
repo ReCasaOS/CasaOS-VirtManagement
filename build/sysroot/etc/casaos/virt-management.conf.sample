@@ -25,4 +25,4 @@ Path = /DATA/VM
 
 [stats]
 ; the VMs' statistics history (7 days) and alert settings
-Path = /var/lib/casaos/stats/virt-management
+Path = /var/lib/casaos/stats/virt_management

@@ -63,10 +63,14 @@ func (v *VirtManagement) ListStats(ctx echo.Context) error {
 	if s == nil {
 		return statsDown(ctx)
 	}
+	items, err := s.Items()
+	if err != nil {
+		return statsFailure(ctx, err)
+	}
 	return ctx.JSON(http.StatusOK, struct {
 		Items []service.StatsItem `json:"items"`
 		Notes []string            `json:"notes"`
-	}{s.Items(), s.Notes()})
+	}{items, s.Notes()})
 }
 
 // GetStatsSeries returns one VM's history over range (live when absent).

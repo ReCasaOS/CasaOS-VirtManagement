@@ -14,9 +14,20 @@ func TestStatsPath(t *testing.T) {
 	old := *StatsInfo
 	t.Cleanup(func() { *StatsInfo = old })
 
+	// a box upgraded from a version without statistics keeps its config file,
+	// which has no [stats]: the built-in default applies
+	upgraded := filepath.Join(t.TempDir(), "upgraded.conf")
+	if err := os.WriteFile(upgraded, []byte("[libvirt]\nURI =\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	InitSetup(upgraded, "")
+	if StatsInfo.Path != "/var/lib/casaos/stats/virt_management" {
+		t.Errorf("without [stats]: %q", StatsInfo.Path)
+	}
+
 	// a new box gets the sample: its [stats] Path is the default
 	InitSetup(filepath.Join(t.TempDir(), "new.conf"), string(sample))
-	if StatsInfo.Path != "/var/lib/casaos/stats/virt-management" {
+	if StatsInfo.Path != "/var/lib/casaos/stats/virt_management" {
 		t.Errorf("from the sample: %q", StatsInfo.Path)
 	}
 

@@ -36,6 +36,7 @@ On a host:
 - `/DATA/VM/` (disks) and `/DATA/VM/iso/` (ISOs and images), the libvirt storage pool `casaos-vm`
 - the libvirt network `casaos` (bridge `casaos0`, 192.168.123.0/24)
 - `/var/log/casaos/virt-management.log`
+- `/var/lib/casaos/stats/virt_management/` (`[stats] Path`): the VMs' statistics history and alert settings
 - `casaos-virt-management.service`, after libvirtd
 
 ## Module
@@ -49,13 +50,13 @@ go generate ./...
 go test ./...
 ```
 
-The tests in `service/testdriver_test.go` run the service against libvirt's test driver, which keeps domains, networks and pools in memory and needs no KVM. They need a running libvirtd and are skipped unless `VIRT_TEST_LIBVIRT_URI` is set:
+The tests in `service/testdriver_test.go` and `service/testdriver_stats_test.go` run the service against libvirt's test driver, which keeps domains, networks and pools in memory and needs no KVM. They need a running libvirtd and are skipped unless `VIRT_TEST_LIBVIRT_URI` is set:
 
 ```sh
 sudo VIRT_TEST_LIBVIRT_URI=test:///default go test ./service -run '^TestDriver'
 ```
 
-`[libvirt] URI` in the config does the same for the whole service. Releases are built by GoReleaser from a `v*.*.*` tag: `linux-{amd64,arm64}-casaos-virt-management-v<version>.tar.gz`, like the other ReCasaOS components.
+`VIRT_TEST_LIBVIRT_SOCKET` is the daemon's socket (`/run/libvirt/libvirt-sock` when unset). `[libvirt] URI = test:///default` in the config does the same for the whole service, statistics included: that URI and `VIRT_TEST_LIBVIRT_URI=test:///default` are what a module proof sets. The test driver has no memory balloon, so a VM's series carry the note `vm_memory_used_unavailable`, and it cannot make a VM crash. Releases are built by GoReleaser from a `v*.*.*` tag: `linux-{amd64,arm64}-casaos-virt-management-v<version>.tar.gz`, like the other ReCasaOS components.
 
 ## Licence
 

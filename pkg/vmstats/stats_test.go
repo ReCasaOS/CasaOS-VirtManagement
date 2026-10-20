@@ -243,7 +243,11 @@ func lastValue(pts []stats.Point) (float64, bool) {
 
 func (r *rig) item(id string) Item {
 	r.t.Helper()
-	for _, it := range r.s.Items() {
+	items, err := r.s.Items()
+	if err != nil {
+		r.t.Fatalf("Items: %v", err)
+	}
+	for _, it := range items {
 		if it.ID == id {
 			return it
 		}
@@ -253,7 +257,8 @@ func (r *rig) item(id string) Item {
 }
 
 func listed(s *Stats, id string) bool {
-	return slices.ContainsFunc(s.Items(), func(it Item) bool { return it.ID == id })
+	items, _ := s.Items()
+	return slices.ContainsFunc(items, func(it Item) bool { return it.ID == id })
 }
 
 func TestStatsTickRecordsRunningVM(t *testing.T) {
@@ -280,7 +285,7 @@ func TestStatsItemsSortedByName(t *testing.T) {
 	a, b := r.vm(vmA, 0), r.vm(vmB, 0)
 	a.Name, b.Name = "Beta", "alpha"
 	r.tick(a, b)
-	items := r.s.Items()
+	items, _ := r.s.Items()
 	if len(items) != 2 || items[0].Name != "alpha" || items[1].Name != "Beta" {
 		t.Errorf("%+v", items)
 	}
@@ -522,8 +527,8 @@ func TestStatsLibvirtdOutage(t *testing.T) {
 	}
 	r.fail(20 * time.Second)
 	r.fail(20 * time.Second)
-	if it := r.item("vm:" + vmA); it.CPUPercent != nil || it.State != "running" {
-		t.Errorf("during the outage: cpu_percent %v, state %s", it.CPUPercent, it.State)
+	if _, err := r.s.Items(); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("list during the outage: %v, want ErrUnavailable", err)
 	}
 	r.fail(Interval) // 40 s of errors
 	back := r.clock.Now()
@@ -553,6 +558,32 @@ func TestStatsLibvirtdOutage(t *testing.T) {
 	}
 	if n := r.logged("libvirt is unreachable"); n != 1 {
 		t.Errorf("outage logged %d times", n)
+	}
+}
+
+// The list is unavailable until a snapshot succeeds, and again from a failed
+// one until the next success: libvirtd away is not an empty host.
+func TestStatsListUnavailableWhileLibvirtIsDown(t *testing.T) {
+	r := newRig(t)
+	if _, err := r.s.Items(); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("before any snapshot: %v", err)
+	}
+	r.fail(Interval)
+	if _, err := r.s.Items(); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("libvirt never reached: %v", err)
+	}
+	r.tick()
+	if items, err := r.s.Items(); err != nil || len(items) != 0 {
+		t.Errorf("no VM: %v %v", items, err)
+	}
+	r.tick(r.vm(vmA, 10))
+	r.fail(Interval)
+	if _, err := r.s.Items(); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("outage: %v", err)
+	}
+	r.tick(r.vm(vmA, 10))
+	if items, err := r.s.Items(); err != nil || len(items) != 1 {
+		t.Errorf("back: %v %v", items, err)
 	}
 }
 
@@ -1267,7 +1298,8 @@ func TestStatsConcurrentReaders(t *testing.T) {
 					return
 				default:
 				}
-				for _, it := range r.s.Items() {
+				items, _ := r.s.Items()
+				for _, it := range items {
 					_, _ = json.Marshal(it)
 				}
 				if res, err := r.s.Series("vm:"+vmA, stats.RangeLive); err == nil {

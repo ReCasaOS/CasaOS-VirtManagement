@@ -34,7 +34,7 @@ var (
 	}
 
 	StatsInfo = &StatsModel{
-		Path: "/var/lib/casaos/stats/virt-management",
+		Path: "/var/lib/casaos/stats/virt_management",
 	}
 
 	Cfg            *ini.File

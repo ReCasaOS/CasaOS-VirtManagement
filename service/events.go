@@ -86,6 +86,13 @@ func (e *Events) checkLifecycleHook() {
 // before its own RPCs; f must not block.
 func (e *Events) OnLifecycle(f func(vmstats.LifecycleEvent)) { e.lifecycle.Store(&f) }
 
+// HandleLifecycle passes ev to the OnLifecycle hook, if one is set.
+func (e *Events) HandleLifecycle(ev vmstats.LifecycleEvent) {
+	if f := e.lifecycle.Load(); f != nil {
+		(*f)(ev)
+	}
+}
+
 func lifecycleEventOf(m golibvirt.DomainEventLifecycleMsg) vmstats.LifecycleEvent {
 	return vmstats.LifecycleEvent{UUID: uuidString(m.Dom.UUID), Name: m.Dom.Name, Event: golibvirt.DomainEventType(m.Event), Detail: m.Detail}
 }
@@ -182,9 +189,7 @@ func (e *Events) WatchLifecycle(ctx context.Context, l *golibvirt.Libvirt) {
 	e.checkLifecycleHook()
 
 	for ev := range events {
-		if f := e.lifecycle.Load(); f != nil {
-			(*f)(lifecycleEventOf(ev))
-		}
+		e.HandleLifecycle(lifecycleEventOf(ev))
 
 		properties := map[string]string{
 			PropertyID:    uuidString(ev.Dom.UUID),

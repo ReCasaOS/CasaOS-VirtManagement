@@ -65,7 +65,7 @@ type Publisher interface {
 }
 
 type Options struct {
-	Dir       string // /var/lib/casaos/stats/virt-management
+	Dir       string // /var/lib/casaos/stats/virt_management
 	Clock     stats.Clock
 	Source    Source
 	Publisher Publisher
@@ -169,6 +169,7 @@ type Stats struct {
 	lastSweep time.Time
 
 	mu       sync.Mutex // guards the fields below
+	up       bool       // the last snapshot succeeded
 	view     map[string]row
 	gone     map[string]string // names of the VMs forgotten at the last tick, for late events
 	refresh  map[string]bool   // by UUID: describe at the next tick
@@ -264,6 +265,9 @@ func (s *Stats) tick(ctx context.Context) {
 			logError("libvirt is unreachable, VM statistics are paused", err)
 		}
 		s.down = true
+		s.mu.Lock()
+		s.up = false
+		s.mu.Unlock()
 		return
 	}
 	s.down = false
@@ -390,7 +394,7 @@ func (s *Stats) tick(ctx context.Context) {
 		view[id] = e.row
 	}
 	s.mu.Lock()
-	s.view, s.gone = view, gone // published: never changed afterwards
+	s.view, s.gone, s.up = view, gone, true // published: never changed afterwards
 	s.mu.Unlock()
 }
 
@@ -521,15 +525,19 @@ func (s *Stats) emit(e stats.Event) {
 	}
 }
 
-// Items lists the VMs of the last successful snapshot, by name.
-func (s *Stats) Items() []Item {
+// Items lists the VMs of the last snapshot, by name; ErrUnavailable until a
+// snapshot succeeds and while they fail (libvirtd away is not an empty host).
+func (s *Stats) Items() ([]Item, error) {
 	s.mu.Lock()
-	view := s.view
+	up, view := s.up, s.view
 	crashed := make(map[string]bool, len(s.crashed))
 	for id := range s.crashed {
 		crashed[idPrefix+id] = true
 	}
 	s.mu.Unlock()
+	if !up {
+		return nil, ErrUnavailable
+	}
 	now := s.clock.Now()
 	out := make([]Item, 0, len(view))
 	for _, r := range view {
@@ -550,7 +558,7 @@ func (s *Stats) Items() []Item {
 	slices.SortFunc(out, func(a, b Item) int {
 		return cmp.Or(strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)), strings.Compare(a.ID, b.ID))
 	})
-	return out
+	return out, nil
 }
 
 // Notes: stats_capacity during the hour after the item cap was hit.

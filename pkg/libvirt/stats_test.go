@@ -330,18 +330,19 @@ type fakeLibvirt struct {
 	maxIn     atomic.Int32
 	delay     time.Duration
 
-	doms    []golibvirt.Domain
-	listErr error
-	info    map[string][5]uint64 // state, maxMem, memory, vcpus, cpuTime
-	infoErr map[string]error
-	mem     map[string][]golibvirt.DomainMemoryStat
-	memErr  map[string]error
-	xml     map[string]string
-	xmlErr  map[string]error
-	xmlCall int
-	block   map[string][4]int64 // rdReq, rdBytes, wrReq, wrBytes, by "dom/target"
-	iface   map[string][6]int64 // rxBytes, rxPkts, rxDrop, txBytes, txPkts, txDrop, by "dom/mac"
-	devErr  map[string]error    // by "dom/device"
+	doms      []golibvirt.Domain
+	listErr   error
+	info      map[string][5]uint64 // state, maxMem, memory, vcpus, cpuTime
+	infoErr   map[string]error
+	mem       map[string][]golibvirt.DomainMemoryStat
+	memErr    map[string]error
+	xml       map[string]string
+	xmlErr    map[string]error
+	xmlCall   int
+	infoCalls int
+	block     map[string][4]int64 // rdReq, rdBytes, wrReq, wrBytes, by "dom/target"
+	iface     map[string][6]int64 // rxBytes, rxPkts, rxDrop, txBytes, txPkts, txDrop, by "dom/mac"
+	devErr    map[string]error    // by "dom/device"
 }
 
 func (f *fakeLibvirt) ConnectGetAllDomainStats(doms []golibvirt.Domain, groups, flags uint32) ([]golibvirt.DomainStatsRecord, error) {
@@ -370,6 +371,7 @@ func (f *fakeLibvirt) ConnectListAllDomains(need int32, flags golibvirt.ConnectL
 }
 
 func (f *fakeLibvirt) DomainGetInfo(d golibvirt.Domain) (uint8, uint64, uint64, uint16, uint64, error) {
+	f.infoCalls++
 	if err := f.infoErr[d.Name]; err != nil {
 		return 0, 0, 0, 0, 0, err
 	}
@@ -457,6 +459,44 @@ func TestStatsReaderOneCallWithStableNICIDs(t *testing.T) {
 	got, _ = r.Read(f)
 	if f.xmlCall != 2 || got[0].NICs[0].ID() != "52:54:00:dd:ee:ff" {
 		t.Errorf("xml calls %d, %+v", f.xmlCall, got[0].NICs)
+	}
+}
+
+// libvirt's test driver answers the batch call with the state only: a running
+// domain without cpu.time is completed with the calls per domain.
+func TestStatsReaderCompletesARecordWithoutCPUTime(t *testing.T) {
+	f := &fakeLibvirt{
+		records: []golibvirt.DomainStatsRecord{
+			{Dom: testDom(t, "web"), Params: []golibvirt.TypedParam{tp("state.state", int32(1))}},
+			{Dom: testDom(t, "off"), Params: []golibvirt.TypedParam{tp("state.state", int32(5))}},
+		},
+		info: map[string][5]uint64{"web": {1, 4096, 2048, 2, 777}},
+		xml:  map[string]string{"web": "<domain><name>web</name></domain>"},
+	}
+	var r StatsReader
+	got, err := r.Read(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.infoCalls != 1 {
+		t.Errorf("%d DomainGetInfo calls, want 1 (the running domain only)", f.infoCalls)
+	}
+	if len(got) != 2 || got[0].CPUTimeNs == nil || *got[0].CPUTimeNs != 777 || got[0].VCPUs == nil || *got[0].VCPUs != 2 {
+		t.Errorf("got %+v", got)
+	}
+	if got[1].CPUTimeNs != nil {
+		t.Errorf("shut-off domain got a cpu time")
+	}
+}
+
+func TestStatsReaderKeepsARecordWithCPUTime(t *testing.T) {
+	f := &fakeLibvirt{records: []golibvirt.DomainStatsRecord{webRecord(t, "vnet3", 100)}, xml: map[string]string{"web": webXML}}
+	var r StatsReader
+	if _, err := r.Read(f); err != nil {
+		t.Fatal(err)
+	}
+	if f.infoCalls != 0 {
+		t.Errorf("%d DomainGetInfo calls, want 0", f.infoCalls)
 	}
 }
 

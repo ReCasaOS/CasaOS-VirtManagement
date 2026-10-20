@@ -55,6 +55,7 @@ Known limits:
 - go-libvirt calls take no context: a `Snapshot` or `Describe` call that hangs (libvirtd stuck rather than gone) blocks the tick, the next ones and shutdown until libvirt answers or the connection drops.
 - A VM crash is seen from libvirt's lifecycle events. Where only the periodic read is available, a crash that happens while the service is down is missed.
 - The balloon's `last-update` timestamp is not parsed, so a guest that stopped reporting can show its last known memory figure.
+- libvirt's test driver answers `ConnectGetAllDomainStats` with the state only; a running domain without a CPU time in that answer is read again with the calls per domain.
 - Not verified against real libvirt yet: `ConnectGetAllDomainStats` on the test driver, the no-wait flag on busy domains, a memory balloon being accepted on the domain XML, and reconnecting after libvirtd restarts. Only unit tests against fakes have run so far.
 
 ## Module

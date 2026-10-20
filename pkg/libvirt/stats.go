@@ -397,6 +397,7 @@ func (r *StatsReader) read(l StatsAPI) (_ []DomainStats, tell func(), _ error) {
 			tell = func() { r.OnNoWaitRefused(refused) }
 		}
 		if err == nil {
+			completeInfo(l, out)
 			r.addMACs(l, out)
 			return out, tell, nil
 		}
@@ -411,6 +412,22 @@ func (r *StatsReader) read(l StatsAPI) (_ []DomainStats, tell func(), _ error) {
 
 	out, err := InfoDomainStats(l)
 	return out, tell, err
+}
+
+// completeInfo reads with the calls per domain a running or paused domain
+// whose record has no CPU time: the driver answered the call but did not
+// provide the groups (libvirt's test driver gives the state only). A domain
+// the per-domain calls cannot read keeps its record.
+func completeInfo(l StatsAPI, all []DomainStats) {
+	for k := range all {
+		s := &all[k]
+		if s.CPUTimeNs != nil || (s.State != StateRunning && s.State != StatePaused) {
+			continue
+		}
+		if full, err := infoDomainStats(l, s.dom); err == nil {
+			*s = full
+		}
+	}
 }
 
 // readAll also returns the refusal of StatsNoWait when it was just learnt.

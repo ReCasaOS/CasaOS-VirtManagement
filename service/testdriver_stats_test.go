@@ -85,10 +85,10 @@ func TestDriverAllDomainStats(t *testing.T) {
 			}
 		}
 		t.Logf("ConnectGetAllDomainStats supported, %d records, fields of %q: %v", len(records), "test", fields)
-		for _, f := range []string{golibvirt.DomainStatsStateState, golibvirt.DomainStatsCPUTime} {
-			if !fields[f] {
-				t.Errorf("no %q for the domain test", f)
-			}
+		// the test driver answers with the state only: StatsReader completes a
+		// running domain with the calls per domain (TestDriverStatsSampling)
+		if !fields[golibvirt.DomainStatsStateState] {
+			t.Errorf("no %q for the domain test", golibvirt.DomainStatsStateState)
 		}
 		return
 	}
@@ -151,8 +151,21 @@ func TestDriverStatsSampling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, allStats := l.ConnectGetAllDomainStats(nil, libvirt.AllStatsGroups, 0)
+	recs, allStats := l.ConnectGetAllDomainStats(nil, libvirt.AllStatsGroups, 0)
+	// the driver has no batch call, or its batch lacks the CPU time: either
+	// way the sampler reads the domain with the calls per domain
 	fallback := isNoSupport(allStats)
+	for _, rec := range recs {
+		if rec.Dom.Name != "test" {
+			continue
+		}
+		fallback = true
+		for _, p := range rec.Params {
+			if p.Field == golibvirt.DomainStatsCPUTime {
+				fallback = false
+			}
+		}
+	}
 	_, _, memoryKiB, _, _, err := l.DomainGetInfo(dom)
 	if err != nil {
 		t.Fatal(err)

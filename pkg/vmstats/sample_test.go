@@ -213,6 +213,19 @@ func TestVMSampleUsedFromUsable(t *testing.T) {
 	}
 }
 
+// A guest using all of its memory is plausible: used == assigned is kept.
+func TestVMSampleUsedEqualsAssigned(t *testing.T) {
+	st := running(1, 2)
+	st.MemAvailableKiB, st.MemUnusedKiB = u(2*1048576), u(1048576)
+	s, unavailable := Sample(nil, reading(t0, st))
+
+	want(t, s, "memory/used", 1048576*1024)
+	want(t, s, "alert/mem_high", 100)
+	if unavailable {
+		t.Error("flagged unavailable")
+	}
+}
+
 func TestVMSampleUsedFallsBackToUnused(t *testing.T) {
 	st := running(1, 2)
 	st.MemAvailableKiB, st.MemUnusedKiB = u(1048576), u(524288)

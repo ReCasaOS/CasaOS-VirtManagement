@@ -589,6 +589,9 @@ type Domain struct {
 	VNC       bool
 	VNCSocket string // only in a running domain's live XML
 	Metadata  *Metadata
+
+	// Description is the owner's free text about the VM (virsh desc).
+	Description string
 }
 
 type domainInXML struct {
@@ -632,6 +635,8 @@ type domainInXML struct {
 		Interfaces []interfaceXML `xml:"interface"`
 		Hostdevs   []hostdevXML   `xml:"hostdev"`
 	} `xml:"devices"`
+
+	Description string `xml:"description"`
 }
 
 // ParseDomainXML reads what the service needs from a domain's XML.
@@ -655,6 +660,7 @@ func ParseDomainXML(s string) (Domain, error) {
 		UEFI:      in.OS.Firmware == "efi" || (in.OS.Loader != nil && in.OS.Loader.Type == "pflash"),
 		Metadata:  in.Metadata.VM,
 	}
+	d.Description = in.Description
 	if in.OS.NVRAM != nil {
 		d.NVRAM = strings.TrimSpace(in.OS.NVRAM.Value)
 	}

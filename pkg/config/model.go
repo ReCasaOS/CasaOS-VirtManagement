@@ -29,6 +29,11 @@ type NetworkModel struct {
 	Subnet string
 }
 
+// StatsModel is where the VM statistics and their alert settings are kept.
+type StatsModel struct {
+	Path string
+}
+
 type StorageModel struct {
 	// Path holds the VM disks and the iso folder. It must be under /DATA, so
 	// the file browser shows it.

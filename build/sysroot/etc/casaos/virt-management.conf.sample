@@ -22,3 +22,7 @@ Subnet = 192.168.123.0/24
 [storage]
 ; where disks and ISOs live; must be under /DATA so the file browser shows them
 Path = /DATA/VM
+
+[stats]
+; the VMs' statistics history (7 days) and alert settings
+Path = /var/lib/casaos/stats/virt-management

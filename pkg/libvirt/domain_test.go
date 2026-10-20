@@ -220,6 +220,13 @@ func TestParseForeignDomainXML(t *testing.T) {
 	}
 }
 
+func TestParseDomainDescription(t *testing.T) {
+	d, err := ParseDomainXML(`<domain type='kvm'><name>web</name><title>Web</title><description>the shop</description></domain>`)
+	if err != nil || d.Title != "Web" || d.Description != "the shop" {
+		t.Errorf("%+v %v", d, err)
+	}
+}
+
 func TestParseVCPUCurrent(t *testing.T) {
 	d, err := ParseDomainXML(`<domain><name>a</name><vcpu current='2'>4</vcpu></domain>`)
 	if err != nil {

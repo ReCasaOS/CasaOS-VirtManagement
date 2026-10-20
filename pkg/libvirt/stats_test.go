@@ -481,7 +481,8 @@ func TestStatsReaderCompletesARecordWithoutCPUTime(t *testing.T) {
 	if f.infoCalls != 1 {
 		t.Errorf("%d DomainGetInfo calls, want 1 (the running domain only)", f.infoCalls)
 	}
-	if len(got) != 2 || got[0].CPUTimeNs == nil || *got[0].CPUTimeNs != 777 || got[0].VCPUs == nil || *got[0].VCPUs != 2 {
+	if len(got) != 2 || got[0].CPUTimeNs == nil || *got[0].CPUTimeNs != 777 || got[0].VCPUs == nil || *got[0].VCPUs != 2 ||
+		got[0].MemAssignedKiB == nil || *got[0].MemAssignedKiB != 2048 {
 		t.Errorf("got %+v", got)
 	}
 	if got[1].CPUTimeNs != nil {

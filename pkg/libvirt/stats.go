@@ -414,18 +414,25 @@ func (r *StatsReader) read(l StatsAPI) (_ []DomainStats, tell func(), _ error) {
 	return out, tell, err
 }
 
-// completeInfo reads with the calls per domain a running or paused domain
-// whose record has no CPU time: the driver answered the call but did not
-// provide the groups (libvirt's test driver gives the state only). A domain
-// the per-domain calls cannot read keeps its record.
+// completeInfo gives a running or paused domain whose record has no CPU time
+// its CPU time, vCPU count and memory from DomainGetInfo: the driver answered
+// the call but did not provide the groups (libvirt's test driver gives the
+// state only). Only that one call is made: no device or balloon counters. A
+// domain it cannot read keeps its record.
 func completeInfo(l StatsAPI, all []DomainStats) {
 	for k := range all {
 		s := &all[k]
 		if s.CPUTimeNs != nil || (s.State != StateRunning && s.State != StatePaused) {
 			continue
 		}
-		if full, err := infoDomainStats(l, s.dom); err == nil {
-			*s = full
+		_, _, memory, vcpus, cpuTime, err := l.DomainGetInfo(s.dom)
+		if err != nil {
+			continue
+		}
+		n := int(vcpus)
+		s.CPUTimeNs, s.VCPUs = &cpuTime, &n
+		if s.MemAssignedKiB == nil {
+			s.MemAssignedKiB = &memory
 		}
 	}
 }

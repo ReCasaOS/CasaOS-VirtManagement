@@ -62,8 +62,14 @@ func acceptsTokenInQuery(c echo.Context) bool {
 	return c.Request().Method == http.MethodGet && slices.Contains(tokenInQueryRoutes, c.Path())
 }
 
-func InitV2Router(conn *libvirt.Conn, vms *service.VMs) http.Handler {
-	virtManagement := v2Route.NewVirtManagement(conn, vms)
+// isStatsRulesPut: the handler bounds and checks this body itself, so that any
+// fault is the contract's bad_rules and an oversized body is never read whole.
+func isStatsRulesPut(c echo.Context) bool {
+	return c.Request().Method == http.MethodPut && c.Path() == V2APIPath+"/stats/:id/alerts"
+}
+
+func InitV2Router(conn *libvirt.Conn, vms *service.VMs, st *service.Stats) http.Handler {
+	virtManagement := v2Route.NewVirtManagement(conn, vms, st)
 
 	e := echo.New()
 
@@ -109,6 +115,7 @@ func InitV2Router(conn *libvirt.Conn, vms *service.VMs) http.Handler {
 
 	e.Use(middleware.OapiRequestValidatorWithOptions(_swagger, &middleware.Options{
 		Options: openapi3filter.Options{AuthenticationFunc: openapi3filter.NoopAuthenticationFunc},
+		Skipper: isStatsRulesPut,
 	}))
 
 	codegen.RegisterHandlersWithBaseURL(e, virtManagement, V2APIPath)

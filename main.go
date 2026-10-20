@@ -142,7 +142,7 @@ func main() {
 		}
 	}
 
-	v2Router := route.InitV2Router(conn, vms)
+	v2Router := route.InitV2Router(conn, vms, nil)
 	v2DocRouter := route.InitV2DocRouter(_docHTML, _docYAML)
 
 	mux := &util_http.HandlerMultiplexer{

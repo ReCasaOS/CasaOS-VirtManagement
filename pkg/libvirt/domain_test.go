@@ -287,3 +287,25 @@ func TestPoolNameFor(t *testing.T) {
 		t.Errorf("names %q %q", a, b)
 	}
 }
+
+// New VMs ask the balloon for guest memory statistics, or memory/used would
+// never have a value. The balloon is already one of the five PCI devices
+// pcieRootPorts leaves room for, so it adds no root port, on either arch.
+func TestBuildDomainXMLHasBalloonStats(t *testing.T) {
+	for _, arch := range []string{"x86_64", "aarch64"} {
+		got, err := BuildDomainXML(DomainSpec{
+			Name: "0badcafe", Title: "t", VCPUs: 1, MemoryMiB: 512, Firmware: FirmwareUEFI,
+			DiskPath: "/DATA/VM/0badcafe.qcow2", NIC: NIC{Type: NICNetwork, Source: "default"}, Arch: arch,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if !strings.Contains(got, `<memballoon model="virtio">`+"\n      "+`<stats period="5"></stats>`+"\n    "+`</memballoon>`) {
+			t.Errorf("%s: no balloon statistics period in\n%s", arch, got)
+		}
+		if n := strings.Count(got, `<controller type="pci"`); n != 1+12 || pcieRootPorts != 12 {
+			t.Errorf("%s: %d PCI controllers, pcieRootPorts %d", arch, n, pcieRootPorts)
+		}
+	}
+}

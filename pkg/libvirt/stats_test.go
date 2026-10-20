@@ -551,6 +551,33 @@ func TestStatsReaderFallsBackOncePerConnection(t *testing.T) {
 	}
 }
 
+// The callbacks run after the reader's lock is released: one may call Reset
+// (or Read) without a deadlock.
+func TestStatsReaderCallbacksMayReset(t *testing.T) {
+	var r StatsReader
+	r.OnFallback = func(error) { r.Reset() }
+	r.OnNoWaitRefused = func(error) { r.Reset() }
+	cases := map[string]*fakeLibvirt{
+		"fallback": {allErr: lerr(golibvirt.ErrOperationDenied), doms: []golibvirt.Domain{testDom(t, "off")}, info: map[string][5]uint64{"off": {5}}},
+		"no wait":  {noNoWait: true, records: []golibvirt.DomainStatsRecord{{Dom: testDom(t, "x")}}},
+	}
+	for name, f := range cases {
+		done := make(chan error, 1)
+		go func() {
+			_, err := r.Read(f)
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("%s: %v", name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: Read deadlocked in its callback", name)
+		}
+	}
+}
+
 func TestStatsReaderConcurrentReads(t *testing.T) {
 	f := &fakeLibvirt{records: []golibvirt.DomainStatsRecord{webRecord(t, "vnet3", 1)}, xml: map[string]string{"web": webXML}, delay: time.Millisecond}
 	var r StatsReader

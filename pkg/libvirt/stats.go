@@ -364,46 +364,58 @@ func (r *StatsReader) Reset() {
 	r.fallback, r.noWait, r.macs = false, false, nil
 }
 
-// Read reads every domain on l.
+// Read reads every domain on l. The callbacks are called once the reader's
+// lock is released, so they may call Reset.
 func (r *StatsReader) Read(l StatsAPI) ([]DomainStats, error) {
+	out, tell, err := r.read(l)
+	if tell != nil {
+		tell()
+	}
+	return out, err
+}
+
+func (r *StatsReader) read(l StatsAPI) (_ []DomainStats, tell func(), _ error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if !r.fallback {
-		out, err := r.readAll(l)
+		out, refused, err := r.readAll(l)
+		if refused != nil && r.OnNoWaitRefused != nil {
+			tell = func() { r.OnNoWaitRefused(refused) }
+		}
 		if err == nil {
 			r.addMACs(l, out)
-			return out, nil
+			return out, tell, nil
 		}
 		if !needsFallback(err) {
-			return nil, err
+			return nil, tell, err
 		}
 		r.fallback = true
 		if r.OnFallback != nil {
-			r.OnFallback(err)
+			tell = func() { r.OnFallback(err) }
 		}
 	}
 
-	return InfoDomainStats(l)
+	out, err := InfoDomainStats(l)
+	return out, tell, err
 }
 
-func (r *StatsReader) readAll(l StatsAPI) ([]DomainStats, error) {
+// readAll also returns the refusal of StatsNoWait when it was just learnt.
+func (r *StatsReader) readAll(l StatsAPI) (_ []DomainStats, refused, _ error) {
 	if r.noWait {
-		return AllDomainStats(l, 0)
+		out, err := AllDomainStats(l, 0)
+		return out, nil, err
 	}
 	out, err := AllDomainStats(l, StatsNoWait)
 	if !refusesFlag(err) {
-		return out, err
+		return out, nil, err
 	}
 	out, retryErr := AllDomainStats(l, 0)
 	if retryErr != nil {
-		return nil, retryErr
+		return nil, nil, retryErr
 	}
 	r.noWait = true
-	if r.OnNoWaitRefused != nil {
-		r.OnNoWaitRefused(err)
-	}
-	return out, nil
+	return out, err, nil
 }
 
 // refusesFlag: how libvirt (old ones, other drivers) refuses a flag it does

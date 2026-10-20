@@ -139,6 +139,7 @@ type row struct {
 type entry struct {
 	row
 	libvirtState  string
+	libvirtName   string
 	prev          *Reading
 	recorded      bool // it has history: a stopped VM records health/ok 0
 	resolved      bool // Resolve ran since it stopped running
@@ -161,12 +162,15 @@ type Stats struct {
 	closed    bool       // under tickMu
 	reg       map[string]*entry
 	stored    map[string]bool // vm: items with history at the start
-	down      bool            // the last snapshot failed and that was logged
+	forgets   map[string]bool // gone VMs to Forget; a failed one is tried again next tick
+	forget    func(item string, at time.Time) error
+	down      bool // the last snapshot failed and that was logged
 	lastSweep time.Time
 
 	mu       sync.Mutex // guards the fields below
 	view     map[string]row
-	refresh  map[string]bool // by UUID: describe at the next tick
+	gone     map[string]string // names of the VMs forgotten at the last tick, for late events
+	refresh  map[string]bool   // by UUID: describe at the next tick
 	starts   map[string]time.Time
 	capUntil time.Time
 	capLog   time.Time
@@ -182,8 +186,8 @@ func New(o Options) (*Stats, error) {
 	}
 	s := &Stats{
 		clock: o.Clock, src: o.Source, store: st,
-		reg: map[string]*entry{}, stored: map[string]bool{},
-		view: map[string]row{}, refresh: map[string]bool{}, starts: map[string]time.Time{},
+		reg: map[string]*entry{}, stored: map[string]bool{}, forgets: map[string]bool{}, forget: st.Forget,
+		view: map[string]row{}, gone: map[string]string{}, refresh: map[string]bool{}, starts: map[string]time.Time{},
 	}
 	ev, err := stats.NewEvaluator(st, o.Dir, s.emit)
 	if err != nil {
@@ -222,6 +226,10 @@ func (s *Stats) Run(ctx context.Context) {
 }
 
 // Tick is one pass: snapshot, describe, record, forget the gone VMs.
+//
+// Known limit: go-libvirt calls take no context, so a Snapshot or Describe
+// RPC that hangs (libvirtd stuck, not gone) blocks this tick, the next ones
+// and Close until libvirt answers or the connection drops.
 func (s *Stats) Tick() { s.tick(context.Background()) }
 
 func (s *Stats) tick(ctx context.Context) {
@@ -269,8 +277,10 @@ func (s *Stats) tick(ctx context.Context) {
 			s.reg[id] = e
 		}
 		e.missed = 0
-		if e.libvirtState != d.State || refresh[d.UUID] { // started, stopped, redefined: read it again
-			e.libvirtState, e.describedAt = d.State, time.Time{}
+		// started, stopped, renamed (virsh domrename, only while shut off),
+		// redefined: read it again
+		if e.libvirtState != d.State || e.libvirtName != d.Name || refresh[d.UUID] {
+			e.libvirtState, e.libvirtName, e.describedAt = d.State, d.Name, time.Time{}
 		}
 
 		cs := ContractState(d.State)
@@ -328,6 +338,7 @@ func (s *Stats) tick(ctx context.Context) {
 		s.record(e, now, smp)
 	}
 
+	gone := map[string]string{}
 	for id, e := range s.reg {
 		if seen[id] {
 			continue
@@ -338,10 +349,21 @@ func (s *Stats) tick(ctx context.Context) {
 		if !e.resolved {
 			s.ev.Resolve(id)
 		}
-		if err := s.store.Forget(id, now); err != nil && !errors.Is(err, stats.ErrUnknownItem) {
-			s.noteRecordError(err, now)
-		}
+		gone[id] = e.name
+		s.forgets[id] = true
 		delete(s.reg, id)
+	}
+	for id := range s.forgets {
+		if seen[id] { // back meanwhile
+			delete(s.forgets, id)
+			continue
+		}
+		// frees its live slot (256 at most); its history stays 7 days
+		if err := s.forget(id, now); err != nil && !errors.Is(err, stats.ErrUnknownItem) {
+			s.noteRecordError(err, now)
+			continue
+		}
+		delete(s.forgets, id)
 	}
 
 	if elapsed(now, s.lastSweep, time.Hour) {
@@ -353,7 +375,7 @@ func (s *Stats) tick(ctx context.Context) {
 		view[id] = e.row
 	}
 	s.mu.Lock()
-	s.view = view
+	s.view, s.gone = view, gone // published: never changed afterwards
 	s.mu.Unlock()
 }
 
@@ -449,7 +471,10 @@ func (s *Stats) noteStarted(uuid string, at time.Time) {
 
 func (s *Stats) emit(e stats.Event) {
 	s.mu.Lock()
-	name := s.view[e.Item].name // a VM resolved as it is forgotten is still there
+	name := s.view[e.Item].name
+	if name == "" { // resolved as it was forgotten, emitted after the tick
+		name = s.gone[e.Item]
+	}
 	s.mu.Unlock()
 	if name == "" { // an alert rebuilt at the start, before the first snapshot
 		name = strings.TrimPrefix(e.Item, idPrefix)

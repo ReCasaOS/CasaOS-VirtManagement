@@ -1159,3 +1159,127 @@ func TestDescribeXML(t *testing.T) {
 		t.Error("bad XML accepted")
 	}
 }
+
+// Forget frees the live slot of a VM gone for two snapshots (not one), and
+// its history stays.
+func TestStatsForgetFreesTheLiveSlot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("creates 256 history files")
+	}
+	r := newRig(t)
+	doms := make([]libvirt.DomainStats, stats.MaxItems)
+	for i := range doms {
+		doms[i] = libvirt.DomainStats{UUID: fmt.Sprintf("00000000-0000-0000-0000-%012d", i), State: libvirt.StateRunning}
+	}
+	gone, extra := "vm:"+doms[0].UUID, libvirt.DomainStats{UUID: vmA, State: libvirt.StateRunning}
+	stored := func(id string) bool { return slices.Contains(r.s.store.Items(), id) }
+
+	r.tick(doms...)
+	r.tick(doms[1:]...)                // one miss
+	r.tick(append(doms[1:], extra)...) // the second: forgotten after this tick's Records
+	if stored("vm:" + vmA) {
+		t.Fatal("a slot was free after one missed snapshot")
+	}
+	if n := r.logged("too many VMs"); n != 1 {
+		t.Fatalf("cap logged %d times, want 1", n)
+	}
+	r.tick(append(doms[1:], extra)...)
+	if !stored("vm:" + vmA) {
+		t.Error("the slot of the gone VM was not freed")
+	}
+	if !stored(gone) {
+		t.Error("the history of the gone VM was dropped")
+	}
+}
+
+func TestStatsRetriesAFailedForget(t *testing.T) {
+	r := newRig(t)
+	calls := 0
+	r.s.forget = func(id string, at time.Time) error {
+		if calls++; calls == 1 {
+			return errors.New("disk full")
+		}
+		return r.s.store.Forget(id, at)
+	}
+	r.run(vmA, 10, 1)
+	r.tick()
+	r.tick()
+	if calls != 1 || listed(r.s, "vm:"+vmA) {
+		t.Fatalf("%d calls, listed %v", calls, listed(r.s, "vm:"+vmA))
+	}
+	r.tick()
+	r.tick()
+	if calls != 2 {
+		t.Errorf("%d Forget calls, want a retry then none", calls)
+	}
+}
+
+// virsh domrename works only on a shut-off domain: the new name is read
+// without a state change.
+func TestStatsRenamedWhileStopped(t *testing.T) {
+	r := newRig(t)
+	r.src.titles[vmA] = [2]string{"old", ""}
+	r.tick(stopped(vmA, libvirt.StateShutOff))
+	r.src.titles[vmA] = [2]string{"new", ""}
+	d := stopped(vmA, libvirt.StateShutOff)
+	d.Name = "new"
+	r.tick(d)
+	if got := r.item("vm:" + vmA).Name; got != "new" {
+		t.Errorf("name %q", got)
+	}
+}
+
+// A resolved event that another goroutine emits after the tick that forgot
+// the VM still carries its name, for one tick.
+func TestStatsLateResolvedEventIsNamed(t *testing.T) {
+	r := newRig(t)
+	r.src.titles[vmA] = [2]string{"Web", ""}
+	r.tick(r.vm(vmA, 10))
+	r.tick()
+	r.tick()
+	late := stats.Event{Item: "vm:" + vmA, Key: "cpu_high", State: "resolved", Since: base}
+	r.s.emit(late)
+	r.tick()
+	r.s.emit(late)
+	evs := r.events()
+	if len(evs) != 2 || evs[0].props["name"] != "Web" || evs[1].props["name"] != vmA {
+		t.Errorf("%+v", evs)
+	}
+}
+
+// Readers run while ticks publish new views (CI runs -race).
+func TestStatsConcurrentReaders(t *testing.T) {
+	r := newRig(t)
+	r.src.titles[vmA] = [2]string{"Web", "d"}
+	r.tick(r.vm(vmA, 10), r.vm(vmB, 10))
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				for _, it := range r.s.Items() {
+					_, _ = json.Marshal(it)
+				}
+				if res, err := r.s.Series("vm:"+vmA, stats.RangeLive); err == nil {
+					_, _ = json.Marshal(res)
+				}
+				_, _, _ = r.s.Alerts("vm:" + vmB)
+				_ = r.s.Notes()
+			}
+		})
+	}
+	for i := range 60 {
+		if i%7 == 0 {
+			r.tick(r.vm(vmA, 10))
+		} else {
+			r.tick(r.vm(vmA, 10), r.vm(vmB, float64(i)))
+		}
+	}
+	close(stop)
+	wg.Wait()
+}

@@ -38,6 +38,20 @@ func TestLifecycleEventOf(t *testing.T) {
 	}
 }
 
+func TestLifecycleHookNotComplainedOfWhenStatsDisabled(t *testing.T) {
+	logged := 0
+	old := logNoLifecycleHook
+	logNoLifecycleHook = func() { logged++ }
+	t.Cleanup(func() { logNoLifecycleHook = old })
+
+	e := NewEvents(t.TempDir())
+	e.StatsDisabled()
+	e.checkLifecycleHook()
+	if logged != 0 {
+		t.Fatalf("logged %d times with the statistics disabled", logged)
+	}
+}
+
 func TestLifecycleHookMissingIsLogged(t *testing.T) {
 	logged := 0
 	old := logNoLifecycleHook

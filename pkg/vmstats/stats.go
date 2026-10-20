@@ -278,6 +278,7 @@ func (s *Stats) tick(ctx context.Context) {
 		s.mu.Unlock()
 		return
 	}
+	first := !s.reached
 	s.down, s.reached = false, true
 
 	s.mu.Lock()
@@ -377,6 +378,16 @@ func (s *Stats) tick(ctx context.Context) {
 		gone[id] = e.name
 		s.forgets[id] = true
 		delete(s.reg, id)
+	}
+	if first {
+		// history from a previous run whose VM is gone (deleted while the
+		// service was down): end its alerts and free its slot
+		for id := range s.stored {
+			if !seen[id] {
+				s.ev.Resolve(id)
+				s.forgets[id] = true
+			}
+		}
 	}
 	for id := range s.forgets {
 		if seen[id] { // back meanwhile
@@ -729,6 +740,7 @@ type publisher struct {
 	closed bool
 	jobs   chan job
 	done   chan struct{}
+	quit   chan struct{} // closed when stop gives up on the queue
 }
 
 type job struct {
@@ -737,10 +749,16 @@ type job struct {
 }
 
 func startPublisher(to Publisher, size int) *publisher {
-	p := &publisher{to: to, jobs: make(chan job, size), done: make(chan struct{})}
+	p := &publisher{to: to, jobs: make(chan job, size), done: make(chan struct{}), quit: make(chan struct{})}
 	go func() {
 		defer close(p.done)
 		for j := range p.jobs {
+			select {
+			case <-p.quit:
+
+				continue
+			default:
+			}
 			if p.to != nil {
 				p.to.Publish(j.name, j.properties)
 			}
@@ -764,7 +782,11 @@ func (p *publisher) submit(name string, properties map[string]string) bool {
 	}
 }
 
-// stop publishes what is queued, then ends the goroutine; again does nothing.
+// publishDrain bounds how long stop waits for the queue; a variable for tests.
+var publishDrain = 5 * time.Second
+
+// stop publishes what is queued for at most publishDrain, drops the rest and
+// logs it, then ends the goroutine; again does nothing.
 func (p *publisher) stop() {
 	p.mu.Lock()
 	if !p.closed {
@@ -772,5 +794,10 @@ func (p *publisher) stop() {
 		close(p.jobs)
 	}
 	p.mu.Unlock()
-	<-p.done
+	select {
+	case <-p.done:
+	case <-time.After(publishDrain):
+		close(p.quit)
+		logError("some events were not published before shutdown", errors.New("the message bus did not answer in time"))
+	}
 }

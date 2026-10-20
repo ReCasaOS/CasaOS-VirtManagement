@@ -47,8 +47,8 @@ On a host:
 
 A sampler reads every VM's counters from libvirt every 5 seconds (one `ConnectGetAllDomainStats` call, or one call per domain on a driver without it) and records them in `[stats] Path` (default `/var/lib/casaos/stats/virt_management`). The routes above serve them; the OpenAPI file has the details. The alerts `cpu_high`, `mem_high` and `vm_crashed` are announced on the MessageBus as `resource:alert-firing` and `resource:alert-resolved`. If the history cannot be opened, the stats routes answer 503 and the rest of the service is unaffected.
 
-- **Memory used** needs the guest's balloon driver. Without it the series carries the note `vm_memory_used_unavailable` and the memory alert stays silent. A VM created by this version asks the balloon for statistics every few seconds; a VM created before it lacks that setting and shows the note until it is restarted after being redefined.
-- **Cost**: parsing, maths and recording for 10 running VMs (4 vCPUs, 2 NICs, 2 disks each) took about 3 to 3.7 ms per tick on a Windows 11 desktop with a Ryzen 9 5900X (`go test ./pkg/vmstats -run xxx -bench Tick10VMs -benchmem`, 3 runs, about 125 KB and 473 allocations per tick). That excludes the libvirt calls themselves, which have not been measured.
+- **Memory used** needs the guest's balloon driver. Without it the series carries the note `vm_memory_used_unavailable` and the memory alert stays silent. A VM created by this version asks the balloon for statistics every few seconds. A VM created before it lacks that setting and shows the note until it is recreated (the setting is written only when a VM is created; stopping and starting it again does not add it).
+- **Cost**: parsing, maths and recording for 10 running VMs (4 vCPUs, 2 NICs, 2 disks each) took about 3 to 3.7 ms per tick on a Windows 11 desktop with a Ryzen 9 5900X, a desktop CPU: slower boxes will differ (`go test ./pkg/vmstats -run xxx -bench Tick10VMs -benchmem`, 3 runs, about 125 KB and 473 allocations per tick). That excludes the libvirt calls themselves, which have not been measured.
 
 Known limits:
 

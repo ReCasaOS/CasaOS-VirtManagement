@@ -1348,3 +1348,52 @@ func TestStatsConcurrentReaders(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// A VM with history and a firing alert that is gone when the service starts
+// (deleted while it was down) must not stay firing for ever.
+func TestStatsStoredVMAbsentAtFirstSnapshotIsResolvedAndForgotten(t *testing.T) {
+	r := newRig(t)
+	r.fire()
+	if f := r.count(EventFiring); f != 1 {
+		t.Fatalf("%d firing before the restart", f)
+	}
+	_ = r.s.Close()
+	r.open()
+	var forgot []string
+	r.s.forget = func(id string, at time.Time) error {
+		forgot = append(forgot, id)
+		return r.s.store.Forget(id, at)
+	}
+	before := r.count(EventResolved)
+	r.tick() // the first snapshot has no VM
+	if got := r.count(EventResolved) - before; got != 1 {
+		t.Errorf("%d resolved events, want 1", got)
+	}
+	if len(forgot) != 1 || forgot[0] != "vm:"+vmA {
+		t.Errorf("forgot %v", forgot)
+	}
+}
+
+// Shutdown does not wait for ever on a publisher that blocks.
+func TestStatsCloseBoundsThePublisherDrain(t *testing.T) {
+	old := publishDrain
+	publishDrain = 100 * time.Millisecond
+	defer func() { publishDrain = old }()
+	r := newRig(t)
+	r.pub.entered = make(chan struct{}, 8)
+	r.pub.block = make(chan struct{})
+	defer close(r.pub.block)
+	r.s.pub.submit("a", nil)
+	r.s.pub.submit("b", nil)
+	<-r.pub.entered
+	done := make(chan struct{})
+	go func() { _ = r.s.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close still blocked")
+	}
+	if r.logged("not published") != 1 {
+		t.Errorf("drop not logged: %v", r.logs)
+	}
+}

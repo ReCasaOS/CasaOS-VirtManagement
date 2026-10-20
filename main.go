@@ -212,6 +212,7 @@ func openStats(dir string, events *service.Events, conn *libvirt.Conn) *service.
 	st, err := service.NewStats(service.StatsOptions{Dir: dir, Clock: stats.SystemClock{}, Source: service.NewConnSource(conn), Publisher: events})
 	if err != nil {
 		logger.Error("the VM statistics did not start, their routes answer 503", zap.String("path", dir), zap.Error(err))
+		events.StatsDisabled()
 		return nil
 	}
 	wireStats(events, st)

@@ -14,6 +14,8 @@ import (
 func BenchmarkTick10VMs(b *testing.B) {
 	clock := stats.NewFakeClock(base)
 	src := &fakeSource{titles: map[string][2]string{}, descCalls: map[string]int{}}
+	oldErr, oldInfo := logError, logInfo
+	b.Cleanup(func() { logError, logInfo = oldErr, oldInfo })
 	logError = func(string, error) {}
 	logInfo = func(string, error) {}
 	s, err := New(Options{Dir: b.TempDir(), Clock: clock, Source: src, Publisher: &fakePublisher{flushed: make(chan struct{})}})

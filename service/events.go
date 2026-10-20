@@ -82,6 +82,10 @@ func (e *Events) checkLifecycleHook() {
 	}
 }
 
+// StatsDisabled says the statistics could not start (their error is logged
+// where it happens): no lifecycle hook is expected, so none is complained of.
+func (e *Events) StatsDisabled() { e.noHook.Do(func() {}) }
+
 // OnLifecycle has f called with every lifecycle event WatchLifecycle reads,
 // before its own RPCs; f must not block.
 func (e *Events) OnLifecycle(f func(vmstats.LifecycleEvent)) { e.lifecycle.Store(&f) }

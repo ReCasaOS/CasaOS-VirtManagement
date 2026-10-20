@@ -37,3 +37,25 @@ func TestLifecycleEventOf(t *testing.T) {
 		t.Errorf("%+v", got)
 	}
 }
+
+func TestLifecycleHookMissingIsLogged(t *testing.T) {
+	logged := 0
+	old := logNoLifecycleHook
+	logNoLifecycleHook = func() { logged++ }
+	t.Cleanup(func() { logNoLifecycleHook = old })
+
+	e := NewEvents(t.TempDir())
+	e.checkLifecycleHook()
+	e.checkLifecycleHook() // a reconnection
+	if logged != 1 {
+		t.Fatalf("logged %d times without a hook", logged)
+	}
+
+	logged = 0
+	e = NewEvents(t.TempDir())
+	e.OnLifecycle(func(vmstats.LifecycleEvent) {})
+	e.checkLifecycleHook()
+	if logged != 0 {
+		t.Errorf("logged %d times with a hook", logged)
+	}
+}

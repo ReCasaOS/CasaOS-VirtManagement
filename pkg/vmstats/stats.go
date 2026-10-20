@@ -180,6 +180,7 @@ type Stats struct {
 	crashed         map[string]crash // by UUID: the firing vm_crashed alerts, as in crashed.json
 	touched         map[string]bool  // by UUID: a lifecycle event since this tick began
 	crashSaveFailed bool
+	crashCapLog     time.Time
 }
 
 // New opens the store and the evaluator in o.Dir, wires the evaluator to the

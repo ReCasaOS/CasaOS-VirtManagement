@@ -82,7 +82,7 @@ func (s *Stats) HandleLifecycle(ev LifecycleEvent) {
 
 	if ev.Event == golibvirt.DomainEventUndefined {
 		s.ev.Resolve(idPrefix + id) // emits: s.mu must be free
-		if err := s.forget(idPrefix+id, now); err != nil && !errors.Is(err, stats.ErrUnknownItem) {
+		if err := s.forget(idPrefix+id, now); err != nil && !errors.Is(err, stats.ErrUnknownItem) && !errors.Is(err, stats.ErrClosed) {
 			s.noteRecordError(err, now) // the tick forgets it again after two snapshots without it
 		}
 	}
@@ -90,8 +90,9 @@ func (s *Stats) HandleLifecycle(ev LifecycleEvent) {
 
 // crashTick, under the tick: a VM libvirt shows crashed without an alert (it
 // crashed while this service or its event stream was away) fires; a firing VM
-// that runs again, or is absent from two successful snapshots in a row,
-// resolves. A VM with an event since this tick began is left to that event.
+// that runs again (not paused by a crash), was shut off cleanly since, or is
+// absent from two successful snapshots in a row, resolves. A VM with an event
+// since this tick began is left to that event.
 func (s *Stats) crashTick(doms []libvirt.DomainStats, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -104,7 +105,7 @@ func (s *Stats) crashTick(doms []libvirt.DomainStats, now time.Time) {
 		_, firing := s.crashed[d.UUID]
 		cs := ContractState(d.State)
 		switch {
-		case firing && (cs == "running" || cs == "paused"):
+		case firing && (cs == "running" || cs == "paused" && !d.Crashed || stoppedCleanly(d)):
 			s.resolveCrash(d.UUID)
 		case !firing && (cs == "crashed" || d.Crashed):
 			name := ""
@@ -128,6 +129,21 @@ func (s *Stats) crashTick(doms []libvirt.DomainStats, now time.Time) {
 	}
 }
 
+// stoppedCleanly: shut off, and libvirt says why: a shutdown, a destroy, a
+// migration, a save or a snapshot restore (not a crash, a failure or unknown,
+// which is what the DomainGetInfo fallback gives).
+func stoppedCleanly(d libvirt.DomainStats) bool {
+	if ContractState(d.State) != "stopped" {
+		return false
+	}
+	switch golibvirt.DomainShutoffReason(d.Reason) {
+	case golibvirt.DomainShutoffShutdown, golibvirt.DomainShutoffDestroyed, golibvirt.DomainShutoffMigrated,
+		golibvirt.DomainShutoffSaved, golibvirt.DomainShutoffFromSnapshot:
+		return true
+	}
+	return false
+}
+
 // fireCrash and resolveCrash run under s.mu, so that the firing and the
 // resolved of a VM reach the publisher in order.
 func (s *Stats) fireCrash(id, name string, now time.Time) {
@@ -135,7 +151,12 @@ func (s *Stats) fireCrash(id, name string, now time.Time) {
 		return
 	}
 	if len(s.crashed) >= stats.MaxItems {
-		return // as many crashed VMs as the store has items: not a real host
+		// as many crashed VMs as the store has items: not a real host
+		if s.crashCapLog.IsZero() || elapsed(now, s.crashCapLog, time.Hour) {
+			s.crashCapLog = now
+			logError("too many crashed VMs; a crash alert is dropped", errors.New(idPrefix+id))
+		}
+		return
 	}
 	if name == "" {
 		name = id
@@ -198,6 +219,8 @@ func writeFileAtomic(path string, b []byte) error {
 		err = cerr
 	}
 	if err == nil {
+		// ponytail: the directory is not fsynced, so a power loss right after
+		// may lose the last change (a firing fires again from the VM's state)
 		err = os.Rename(tmp, path)
 	}
 	if err != nil {

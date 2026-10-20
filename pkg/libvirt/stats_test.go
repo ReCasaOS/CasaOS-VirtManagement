@@ -166,20 +166,26 @@ func TestParseDomainStatsShutOff(t *testing.T) {
 
 func TestParseDomainStatsCrashed(t *testing.T) {
 	cases := []struct {
-		params []golibvirt.TypedParam
-		want   bool
+		params  []golibvirt.TypedParam
+		crashed bool
+		reason  int32
 	}{
-		{[]golibvirt.TypedParam{tp("state.state", int32(5)), tp("state.reason", int32(3))}, true},
-		{[]golibvirt.TypedParam{tp("state.reason", uint32(3)), tp("state.state", uint32(5))}, true}, // any order
-		{[]golibvirt.TypedParam{tp("state.state", int32(5)), tp("state.reason", int32(2))}, false},  // destroyed
-		{[]golibvirt.TypedParam{tp("state.state", int32(1)), tp("state.reason", int32(3))}, false},  // running, reason of another state
-		{[]golibvirt.TypedParam{tp("state.state", int32(5))}, false},
-		{[]golibvirt.TypedParam{tp("state.state", int32(5)), tp("state.reason", "3")}, false},
-		{[]golibvirt.TypedParam{tp("state.state", int32(5)), tp("state.reason", uint64(1<<32+3))}, false},
+		{[]golibvirt.TypedParam{tp("state.state", int32(5)), tp("state.reason", int32(3))}, true, 3},
+		{[]golibvirt.TypedParam{tp("state.reason", uint32(3)), tp("state.state", uint32(5))}, true, 3},  // any order
+		{[]golibvirt.TypedParam{tp("state.state", int32(5)), tp("state.reason", int32(2))}, false, 2},   // destroyed
+		{[]golibvirt.TypedParam{tp("state.state", int32(5)), tp("state.reason", int32(10))}, false, 10}, // a paused reason
+		{[]golibvirt.TypedParam{tp("state.state", int32(3)), tp("state.reason", int32(10))}, true, 10},  // paused by a crash
+		{[]golibvirt.TypedParam{tp("state.state", int32(3)), tp("state.reason", int32(1))}, false, 1},   // paused by the user
+		{[]golibvirt.TypedParam{tp("state.state", int32(3)), tp("state.reason", int32(3))}, false, 3},   // paused for a save
+		{[]golibvirt.TypedParam{tp("state.state", int32(1)), tp("state.reason", int32(3))}, false, 3},   // running, reason of another state
+		{[]golibvirt.TypedParam{tp("state.state", int32(5))}, false, 0},
+		{[]golibvirt.TypedParam{tp("state.state", int32(5)), tp("state.reason", "3")}, false, 0},
+		{[]golibvirt.TypedParam{tp("state.state", int32(5)), tp("state.reason", uint64(1<<32+3))}, false, 0},
 	}
 	for i, c := range cases {
-		if s := ParseDomainStats(golibvirt.DomainStatsRecord{Dom: testDom(t, "x"), Params: c.params}); s.Crashed != c.want {
-			t.Errorf("case %d: Crashed %v", i, s.Crashed)
+		s := ParseDomainStats(golibvirt.DomainStatsRecord{Dom: testDom(t, "x"), Params: c.params})
+		if s.Crashed != c.crashed || s.Reason != c.reason {
+			t.Errorf("case %d: Crashed %v Reason %d", i, s.Crashed, s.Reason)
 		}
 	}
 }

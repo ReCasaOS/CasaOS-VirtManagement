@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -65,6 +66,20 @@ var EventTypes = []external.EventType{
 type Events struct {
 	runtimePath string
 	lifecycle   atomic.Pointer[func(vmstats.LifecycleEvent)]
+	noHook      sync.Once
+}
+
+// logNoLifecycleHook is replaced by tests.
+var logNoLifecycleHook = func() {
+	logger.Error("the VM statistics do not receive the lifecycle events: crash alerts come from the sampler only")
+}
+
+// checkLifecycleHook logs once when the lifecycle events are read with no
+// OnLifecycle hook (main forgot to wire the statistics).
+func (e *Events) checkLifecycleHook() {
+	if e.lifecycle.Load() == nil {
+		e.noHook.Do(logNoLifecycleHook)
+	}
 }
 
 // OnLifecycle has f called with every lifecycle event WatchLifecycle reads,
@@ -164,6 +179,7 @@ func (e *Events) WatchLifecycle(ctx context.Context, l *golibvirt.Libvirt) {
 		logger.Error("error when subscribing to libvirt lifecycle events", zap.Error(err))
 		return
 	}
+	e.checkLifecycleHook()
 
 	for ev := range events {
 		if f := e.lifecycle.Load(); f != nil {

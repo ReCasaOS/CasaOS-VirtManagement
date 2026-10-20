@@ -414,6 +414,9 @@ func TestCrashFloodIsBounded(t *testing.T) {
 	if r.logged("dropped") == 0 {
 		t.Errorf("no drop logged")
 	}
+	if n := r.logged("too many crashed"); n != 1 {
+		t.Errorf("cap logged %d times", n)
+	}
 	close(r.pub.block)
 	if n := len(r.savedCrashes()); n != stats.MaxItems {
 		t.Errorf("%d saved", n)
@@ -448,5 +451,78 @@ func TestStatsSweepKeepsOtherFiles(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(r.dir, f)); err != nil {
 			t.Errorf("%s: %v", f, err)
 		}
+	}
+}
+
+func withReason(d libvirt.DomainStats, reason int32) libvirt.DomainStats {
+	d.Reason = reason
+	d.Crashed = d.State == libvirt.StateShutOff && reason == int32(golibvirt.DomainShutoffCrashed) ||
+		d.State == libvirt.StatePaused && reason == int32(golibvirt.DomainPausedCrashed)
+	return d
+}
+
+func TestCrashPausedByCrashKeepsFiring(t *testing.T) {
+	r := newRig(t)
+	pausedCrash := withReason(stopped(vmA, libvirt.StatePaused), int32(golibvirt.DomainPausedCrashed))
+	r.tick(pausedCrash) // crashed while away: fires
+	r.tick(pausedCrash) // and stays
+	if evs := r.crashEvents(); len(evs) != 1 || evs[0].name != EventFiring {
+		t.Fatalf("events %+v", evs)
+	}
+	r.tick(withReason(stopped(vmA, libvirt.StatePaused), int32(golibvirt.DomainPausedUser)))
+	if evs := r.crashEvents(); len(evs) != 2 || evs[1].name != EventResolved {
+		t.Fatalf("events after a pause by the user %+v", evs)
+	}
+}
+
+func TestCrashResolvedByACleanStop(t *testing.T) {
+	r := newRig(t)
+	r.tick(r.vm(vmA, 10))
+	r.life(vmA, golibvirt.DomainEventStopped, 5)
+	for _, d := range []libvirt.DomainStats{
+		stopped(vmA, libvirt.StateShutOff), // no reason (fallback path)
+		withReason(stopped(vmA, libvirt.StateShutOff), int32(golibvirt.DomainShutoffFailed)),
+		withReason(stopped(vmA, libvirt.StateShutOff), int32(golibvirt.DomainShutoffUnknown)),
+		withReason(stopped(vmA, libvirt.StateShutOff), int32(golibvirt.DomainShutoffDaemon)),
+		crashedVM(vmA),
+		withReason(stopped(vmA, libvirt.StateCrashed), int32(golibvirt.DomainCrashedPanicked)), // 1, as DomainShutoffShutdown
+	} {
+		r.tick(d)
+	}
+	if n := len(r.crashEvents()); n != 1 {
+		t.Fatalf("%d events before a clean stop", n)
+	}
+	// restarted and shut down cleanly while the service was away
+	r.tick(withReason(stopped(vmA, libvirt.StateShutOff), int32(golibvirt.DomainShutoffShutdown)))
+	if evs := r.crashEvents(); len(evs) != 2 || evs[1].name != EventResolved {
+		t.Fatalf("events %+v", evs)
+	}
+	for _, reason := range []golibvirt.DomainShutoffReason{golibvirt.DomainShutoffDestroyed, golibvirt.DomainShutoffMigrated, golibvirt.DomainShutoffSaved, golibvirt.DomainShutoffFromSnapshot} {
+		r.life(vmA, golibvirt.DomainEventCrashed, 0)
+		r.tick(withReason(stopped(vmA, libvirt.StateShutOff), int32(reason)))
+		if _, firing := r.s.crashed[vmA]; firing {
+			t.Errorf("reason %d: still firing", reason)
+		}
+	}
+}
+
+func TestCrashSinceInWholeSeconds(t *testing.T) {
+	r := newRig(t)
+	r.clock.Set(base.Add(1500 * time.Millisecond))
+	r.life(vmA, golibvirt.DomainEventCrashed, 0)
+	r.tick(crashedVM(vmA))
+	_, active, err := r.s.Alerts("vm:" + vmA)
+	if err != nil || len(active) != 1 || !active[0].Since.Equal(base.Add(time.Second)) {
+		t.Fatalf("Alerts %+v %v", active, err)
+	}
+}
+
+func TestCrashUndefineAfterCloseIsQuiet(t *testing.T) {
+	r := newRig(t)
+	r.tick(r.vm(vmA, 10))
+	_ = r.s.Close()
+	r.life(vmA, golibvirt.DomainEventUndefined, 0)
+	if n := r.logged("recording"); n != 0 {
+		t.Errorf("logs %v", r.logs)
 	}
 }

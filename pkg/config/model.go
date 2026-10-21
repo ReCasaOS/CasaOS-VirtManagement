@@ -34,6 +34,12 @@ type StatsModel struct {
 	Path string
 }
 
+// ImagesModel bounds what the browser can upload into the iso folder.
+type ImagesModel struct {
+	// MaxUploadGiB is the largest upload; 0 or less is the default, 64.
+	MaxUploadGiB int
+}
+
 type StorageModel struct {
 	// Path holds the VM disks and the iso folder. It must be under /DATA, so
 	// the file browser shows it.

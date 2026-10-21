@@ -40,3 +40,32 @@ func TestStatsPath(t *testing.T) {
 		t.Errorf("set: %q", StatsInfo.Path)
 	}
 }
+
+func TestMaxUploadBytes(t *testing.T) {
+	sample, err := os.ReadFile("../../build/sysroot/etc/casaos/virt-management.conf.sample")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := *ImagesInfo
+	t.Cleanup(func() { *ImagesInfo = old })
+
+	for _, tc := range []struct {
+		conf string
+		want int64
+	}{
+		{"[libvirt]\nURI =\n", 64 << 30}, // upgraded: no [images]
+		{string(sample), 64 << 30},
+		{"[images]\nMaxUploadGiB = 8\n", 8 << 30},
+		{"[images]\nMaxUploadGiB = 0\n", 64 << 30},
+	} {
+		*ImagesInfo = old
+		conf := filepath.Join(t.TempDir(), "virt.conf")
+		if err := os.WriteFile(conf, []byte(tc.conf), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		InitSetup(conf, "")
+		if got := MaxUploadBytes(); got != tc.want {
+			t.Errorf("%q: %d, want %d", tc.conf, got, tc.want)
+		}
+	}
+}

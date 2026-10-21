@@ -68,6 +68,12 @@ func isStatsRulesPut(c echo.Context) bool {
 	return c.Request().Method == http.MethodPut && c.Path() == V2APIPath+"/stats/:id/alerts"
 }
 
+// isImageUpload: the body is an image streamed to disk; the validator would
+// read it whole. The handler checks the request itself.
+func isImageUpload(c echo.Context) bool {
+	return c.Request().Method == http.MethodPut && c.Path() == V2APIPath+"/images/upload"
+}
+
 func InitV2Router(conn *libvirt.Conn, vms *service.VMs, st *service.Stats) http.Handler {
 	virtManagement := v2Route.NewVirtManagement(conn, vms, st)
 
@@ -115,7 +121,7 @@ func InitV2Router(conn *libvirt.Conn, vms *service.VMs, st *service.Stats) http.
 
 	e.Use(middleware.OapiRequestValidatorWithOptions(_swagger, &middleware.Options{
 		Options: openapi3filter.Options{AuthenticationFunc: openapi3filter.NoopAuthenticationFunc},
-		Skipper: isStatsRulesPut,
+		Skipper: func(c echo.Context) bool { return isStatsRulesPut(c) || isImageUpload(c) },
 	}))
 
 	codegen.RegisterHandlersWithBaseURL(e, virtManagement, V2APIPath)

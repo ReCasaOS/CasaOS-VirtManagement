@@ -33,6 +33,10 @@ var (
 		Path: "/DATA/VM",
 	}
 
+	ImagesInfo = &ImagesModel{
+		MaxUploadGiB: DefaultMaxUploadGiB,
+	}
+
 	StatsInfo = &StatsModel{
 		Path: "/var/lib/casaos/stats/virt_management",
 	}
@@ -69,6 +73,18 @@ func InitSetup(config string, sample string) {
 	mapTo("network", NetworkInfo)
 	mapTo("storage", StorageInfo)
 	mapTo("stats", StatsInfo)
+	mapTo("images", ImagesInfo)
+}
+
+// DefaultMaxUploadGiB is [images] MaxUploadGiB when it is not set.
+const DefaultMaxUploadGiB = 64
+
+// MaxUploadBytes is the largest image the browser can upload.
+func MaxUploadBytes() int64 {
+	if ImagesInfo.MaxUploadGiB <= 0 {
+		return DefaultMaxUploadGiB << 30
+	}
+	return int64(ImagesInfo.MaxUploadGiB) << 30
 }
 
 // LibvirtSockets is where libvirtd is looked for, in order.

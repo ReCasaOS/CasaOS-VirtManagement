@@ -52,9 +52,9 @@ type VMs struct {
 }
 
 func NewVMs(ctx context.Context, conn *libvirt.Conn, events *Events, net libvirt.NetworkSpec, fw *firewall.Firewall) *VMs {
-	isoDir := func() string { return filepath.Join(config.StoragePath(), ISOFolderName) }
+	downloads := NewDownloads(ctx, func() string { return filepath.Join(config.StoragePath(), ISOFolderName) })
 	return &VMs{conn: conn, events: events, ctx: ctx, creating: map[string]bool{}, net: net, fw: fw,
-		Downloads: NewDownloads(ctx, isoDir), Uploads: NewUploads(isoDir, config.MaxUploadBytes())}
+		Downloads: downloads, Uploads: NewUploads(downloads, config.MaxUploadBytes())}
 }
 
 // Network is the CasaOS network.

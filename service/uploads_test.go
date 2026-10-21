@@ -3,6 +3,7 @@ package service
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -110,10 +111,12 @@ func TestImageWarning(t *testing.T) {
 	}
 }
 
-// rig is an Uploads on a temp dir, with plenty of room and no deadlines.
+// rig is an Uploads on a temp dir, with plenty of room and no deadlines,
+// and the Downloads it shares the folder with.
 type rig struct {
 	t   *testing.T
 	dir string
+	d   *Downloads
 	u   *Uploads
 }
 
@@ -125,16 +128,16 @@ func newRig(t *testing.T) *rig {
 	t.Cleanup(func() { DataRoot = previous })
 
 	dir := filepath.Join(root, "VM", ISOFolderName)
-	u := NewUploads(func() string { return dir }, 64<<30)
+	d := NewDownloads(context.Background(), func() string { return dir })
+	u := NewUploads(d, 64<<30)
 	u.space = func(string) (int64, int64, error) { return 100 << 30, 200 << 30, nil }
-	return &rig{t: t, dir: dir, u: u}
+	u.setReadDeadline = func(http.ResponseWriter, time.Time) error { return nil }
+	return &rig{t: t, dir: dir, d: d, u: u}
 }
 
-// put calls the handler directly, without a server: the read deadline is a
-// no-op.
+// put calls the handler directly, without a server.
 func (r *rig) put(name, sha string, body io.Reader, length int64) (int, string) {
 	r.t.Helper()
-	r.u.setReadDeadline = func(http.ResponseWriter, time.Time) error { return nil }
 	req := httptest.NewRequest(http.MethodPut, "/images/upload", body)
 	req.ContentLength = length
 	_, err := r.u.Receive(httptest.NewRecorder(), req, name, sha)
@@ -271,7 +274,6 @@ func TestUploadSucceeds(t *testing.T) {
 	sum := sha256.Sum256(body)
 	sha := hex.EncodeToString(sum[:])
 
-	r.u.setReadDeadline = func(http.ResponseWriter, time.Time) error { return nil }
 	req := httptest.NewRequest(http.MethodPut, "/images/upload", bytes.NewReader(body))
 	img, err := r.u.Receive(httptest.NewRecorder(), req, "debian.iso", strings.ToUpper(sha))
 	if err != nil {
@@ -282,7 +284,7 @@ func TestUploadSucceeds(t *testing.T) {
 		t.Errorf("image %+v", img)
 	}
 	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o640 {
+	if err != nil || info.Mode().Perm() != 0o644 {
 		t.Errorf("file %v %v", info, err)
 	}
 	r.noParts()
@@ -352,6 +354,7 @@ func (r *rig) waitParts(n int) {
 func TestUploadStalledClient(t *testing.T) {
 	r := newRig(t)
 	r.u.idle = 200 * time.Millisecond
+	r.u.setReadDeadline = responseReadDeadline
 	conn := begin(t, r.server(), "slow.iso", 1000, "only ten b")
 
 	started := time.Now()
@@ -405,11 +408,187 @@ func TestCleanPartsTakesUploads(t *testing.T) {
 
 	// what a stop leaves behind is what a start deletes
 	parts := r.parts()
-	NewDownloads(t.Context(), func() string { return r.dir }).CleanParts()
+	r.d.CleanParts()
 	for _, p := range parts {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("%s stayed", p)
 		}
 	}
 	conn.Close()
+}
+
+func TestUploadDeadline(t *testing.T) {
+	start := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		length int64
+		want   time.Duration
+	}{
+		{1000, 5 * time.Minute},
+		{60 * uploadMinRate, 6 * time.Minute},
+		{64 << 30, 24 * time.Hour}, // 145 h at the minimum rate: capped
+	} {
+		if got := uploadDeadline(start, tc.length).Sub(start); got != tc.want {
+			t.Errorf("%d bytes: %v, want %v", tc.length, got, tc.want)
+		}
+	}
+}
+
+// trickle sends a byte every 119 s of a fake clock, under the idle deadline,
+// and fails a read the way a connection does once its deadline is past.
+type trickle struct {
+	now, deadline time.Time
+	sent          int
+}
+
+func (tr *trickle) Read(p []byte) (int, error) {
+	tr.now = tr.now.Add(119 * time.Second)
+	if tr.now.After(tr.deadline) {
+		return 0, os.ErrDeadlineExceeded
+	}
+	tr.sent++
+	p[0] = 0
+	return 1, nil
+}
+
+func TestUploadTrickleLosesItsSlot(t *testing.T) {
+	r := newRig(t)
+	tr := &trickle{now: time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)}
+	r.u.now = func() time.Time { return tr.now }
+	r.u.setReadDeadline = func(_ http.ResponseWriter, d time.Time) error { tr.deadline = d; return nil }
+
+	// 1000 bytes may take 5 min: the third byte, at 357 s, is past it
+	if status, code := r.put("slow.iso", "", tr, 1000); status != http.StatusRequestTimeout || code != "stalled" {
+		t.Errorf("%d %s", status, code)
+	}
+	if tr.sent != 2 {
+		t.Errorf("%d bytes taken", tr.sent)
+	}
+	r.noParts()
+	if len(r.u.slots) != 0 {
+		t.Error("the slot is still held")
+	}
+}
+
+func TestUploadReservesInFlight(t *testing.T) {
+	r := newRig(t)
+	// 9 GiB usable: 5 GiB fits, twice does not
+	r.u.space = func(string) (int64, int64, error) { return 10 << 30, 20 << 30, nil }
+	conn := begin(t, r.server(), "a.iso", 5<<30, "x")
+	r.waitParts(1)
+
+	if status, code := r.put("b.iso", "", bytes.NewReader([]byte("x")), 5<<30); status != 507 || code != "insufficient_storage" {
+		t.Errorf("second: %d %s", status, code)
+	}
+
+	conn.Close()
+	r.waitParts(0)
+	r.waitUnclaimed()
+	if _, code := r.put("b.iso", "", bytes.NewReader([]byte("x")), 5<<30); code != "incomplete" {
+		t.Errorf("after the first ended: %s, want it accepted", code)
+	}
+	r.waitUnclaimed()
+}
+
+func (r *rig) waitUnclaimed() {
+	r.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !r.d.claims.empty() {
+		if time.Now().After(deadline) {
+			r.t.Fatal("claims left")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// The interleaving of the review: an upload runs, a download of the same
+// name starts, then a second upload of it.
+func TestUploadDownloadSameName(t *testing.T) {
+	r := newRig(t)
+	files := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("from the web")) }))
+	defer files.Close()
+
+	body := []byte("the upload, all of it")
+	conn := begin(t, r.server(), "same.iso", len(body), string(body[:4]))
+	r.waitParts(1)
+
+	if _, err := r.d.Start(files.URL+"/same.iso", ""); !errors.Is(err, ErrConflict) {
+		t.Errorf("download of a name being uploaded: %v", err)
+	}
+	if status, code := r.put("same.iso", "", bytes.NewReader(body), int64(len(body))); status != 409 || code != "exists" {
+		t.Errorf("second upload: %d %s", status, code)
+	}
+
+	conn.Write(body[4:])
+	if status, code := answer(t, conn); status != http.StatusCreated {
+		t.Fatalf("first upload: %d %s", status, code)
+	}
+	if got, _ := os.ReadFile(filepath.Join(r.dir, "same.iso")); !bytes.Equal(got, body) {
+		t.Errorf("file %q", got)
+	}
+	r.noParts()
+	r.waitUnclaimed()
+}
+
+func TestDownloadLeavesOthersPart(t *testing.T) {
+	dir := t.TempDir()
+	files := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("from the web")) }))
+	defer files.Close()
+	part := filepath.Join(dir, "x.iso"+partSuffix)
+	os.WriteFile(part, []byte("left by another writer"), 0o644)
+
+	d := NewDownloads(context.Background(), func() string { return dir })
+	v, err := d.Start(files.URL+"/x.iso", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, d, v.Id, "failed")
+	if b, _ := os.ReadFile(part); string(b) != "left by another writer" {
+		t.Errorf("the part is %q", b)
+	}
+}
+
+func TestUploadPathReplacedBeforeRename(t *testing.T) {
+	r := newRig(t)
+	part := filepath.Join(r.dir, "x.iso"+partSuffix)
+	r.u.beforeRename = func() {
+		os.Remove(part)
+		os.WriteFile(part, []byte("another file"), 0o644)
+	}
+	if status, code := r.put("x.iso", "", bytes.NewReader([]byte("mine")), 4); status != 500 || code != "conflict" {
+		t.Errorf("%d %s", status, code)
+	}
+	if _, err := os.Stat(filepath.Join(r.dir, "x.iso")); err == nil {
+		t.Error("renamed a file it did not write")
+	}
+	if b, _ := os.ReadFile(part); string(b) != "another file" {
+		t.Errorf("the other file is %q", b)
+	}
+	r.waitUnclaimed()
+}
+
+func TestUploadNoReplaceAtRename(t *testing.T) {
+	r := newRig(t)
+	dst := filepath.Join(r.dir, "x.iso")
+	r.u.beforeRename = func() { os.WriteFile(dst, []byte("planted"), 0o644) }
+	if status, code := r.put("x.iso", "", bytes.NewReader([]byte("mine")), 4); status != 409 || code != "exists" {
+		t.Errorf("%d %s", status, code)
+	}
+	if b, _ := os.ReadFile(dst); string(b) != "planted" {
+		t.Errorf("replaced: %q", b)
+	}
+	r.noParts()
+}
+
+func TestUploadPanicCleansPart(t *testing.T) {
+	r := newRig(t)
+	r.u.beforeRename = func() { panic("boom") }
+	func() {
+		defer func() { recover() }()
+		r.put("x.iso", "", bytes.NewReader([]byte("mine")), 4)
+	}()
+	r.noParts()
+	if len(r.u.slots) != 0 {
+		t.Error("the slot is still held")
+	}
+	r.waitUnclaimed()
 }

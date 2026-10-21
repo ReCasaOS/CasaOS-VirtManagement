@@ -43,7 +43,8 @@ func TestUploadImageRoute(t *testing.T) {
 	t.Cleanup(func() { config.StorageInfo.Path = previousStorage })
 	dir := filepath.Join(root, "VM", service.ISOFolderName)
 
-	vms := &service.VMs{Uploads: service.NewUploads(func() string { return dir }, 64<<30)}
+	downloads := service.NewDownloads(t.Context(), func() string { return dir })
+	vms := &service.VMs{Downloads: downloads, Uploads: service.NewUploads(downloads, 64<<30)}
 	srv := httptest.NewServer(InitV2Router(nil, vms, nil))
 	defer srv.Close()
 

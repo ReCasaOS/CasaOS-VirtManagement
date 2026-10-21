@@ -57,6 +57,7 @@ func TestMaxUploadBytes(t *testing.T) {
 		{string(sample), 64 << 30},
 		{"[images]\nMaxUploadGiB = 8\n", 8 << 30},
 		{"[images]\nMaxUploadGiB = 0\n", 64 << 30},
+		{"[images]\nMaxUploadGiB = 1099511627776\n", 1 << 50}, // 2^40 GiB would overflow: capped at 1 PiB
 	} {
 		*ImagesInfo = old
 		conf := filepath.Join(t.TempDir(), "virt.conf")

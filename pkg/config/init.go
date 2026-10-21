@@ -79,12 +79,13 @@ func InitSetup(config string, sample string) {
 // DefaultMaxUploadGiB is [images] MaxUploadGiB when it is not set.
 const DefaultMaxUploadGiB = 64
 
-// MaxUploadBytes is the largest image the browser can upload.
+// MaxUploadBytes is the largest image the browser can upload, at most 1 PiB
+// so that the byte count cannot overflow.
 func MaxUploadBytes() int64 {
 	if ImagesInfo.MaxUploadGiB <= 0 {
 		return DefaultMaxUploadGiB << 30
 	}
-	return int64(ImagesInfo.MaxUploadGiB) << 30
+	return int64(min(ImagesInfo.MaxUploadGiB, 1<<20)) << 30
 }
 
 // LibvirtSockets is where libvirtd is looked for, in order.

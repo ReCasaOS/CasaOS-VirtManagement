@@ -59,6 +59,26 @@ func (v *VirtManagement) ListImages(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, codegen.ImageListOK{Data: &images})
 }
 
+// UploadImage writes the request body into the iso folder. Refusals answer
+// their code alone (see the OpenAPI document).
+func (v *VirtManagement) UploadImage(ctx echo.Context, params codegen.UploadImageParams) error {
+	sha := ""
+	if params.Sha256 != nil {
+		sha = *params.Sha256
+	}
+
+	image, err := v.vms.Uploads.Receive(ctx.Response(), ctx.Request(), params.Name, sha)
+	var refused *service.UploadError
+	if errors.As(err, &refused) {
+		return ctx.JSON(refused.Status, codegen.BaseResponse{Message: &refused.Code})
+	}
+	if err != nil {
+		return fail(ctx, err)
+	}
+
+	return ctx.JSON(http.StatusCreated, codegen.ImageOK{Data: &image})
+}
+
 func (v *VirtManagement) ListVMs(ctx echo.Context) error {
 	vms, err := v.vms.List()
 	if err != nil {

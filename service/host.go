@@ -68,16 +68,22 @@ func Host(conn *libvirt.Conn, net libvirt.NetworkSpec) codegen.Host {
 // nearest existing parent is measured: it is the filesystem the folder will be
 // created on.
 func freeBytes(path string) (int64, error) {
+	free, _, err := diskSpace(path)
+	return free, err
+}
+
+// diskSpace is freeBytes and the size of that filesystem.
+func diskSpace(path string) (free, total int64, err error) {
 	for {
 		var st unix.Statfs_t
 		err := unix.Statfs(path, &st)
 		if err == nil {
-			return int64(st.Bavail) * int64(st.Bsize), nil
+			return int64(st.Bavail) * int64(st.Bsize), int64(st.Blocks) * int64(st.Bsize), nil
 		}
 
 		parent := filepath.Dir(path)
 		if !errors.Is(err, os.ErrNotExist) || parent == path {
-			return 0, err
+			return 0, 0, err
 		}
 		path = parent
 	}

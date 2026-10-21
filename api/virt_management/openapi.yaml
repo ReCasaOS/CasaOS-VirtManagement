@@ -532,6 +532,67 @@ paths:
         "500":
           $ref: "#/components/responses/ResponseInternalServerError"
 
+  /images/upload:
+    put:
+      summary: Upload an image from the browser
+      description: |-
+        Writes the raw request body (`application/octet-stream`, not multipart) to the `iso` folder of the storage folder, under `name`, where the images list shows it once the answer comes. The body is streamed to disk, never held in memory. The request validator skips this route: the handler checks it.
+
+        - `Content-Length` is required: absent or 0 is 411 `length_required`. Over `[images] MaxUploadGiB` (default 64) is 413 `too_large`. More than the free space of the folder's filesystem less a reserve (the larger of 1 GiB and 2 % of the filesystem) and less what the running uploads and downloads (of known size) will still write is 507 `insufficient_storage`. These, and `bad_name`, `exists` and `busy`, are answered before the body is read.
+        - `name` must be a plain file name with an image extension (`.iso`, `.qcow2`, `.img`, `.raw`, `.vmdk`, `.vdi`, optionally `.xz`, `.gz` or `.zip`): no `/`, `\`, control or format characters, not starting with `.`, not ending with `.` or a space, no Windows device name (`CON.iso`), at most 250 bytes once in Unicode NFC (which is what the file is named). Otherwise 400 `bad_name`.
+        - An existing file, or an upload or download of the same name in progress, is 409 `exists`: nothing is ever overwritten. At most 2 uploads run at once: a third is 503 `busy`.
+        - The body goes to `<name>.part` (deleted when the upload fails, and at the next start if the service stops meanwhile), and is renamed when complete and checked. A body that ends early or a client that aborts is 400 `incomplete`; one longer than `Content-Length` is 400 `too_long`; a client that sends nothing for 2 minutes, or has not finished by the time the size allows at 128 KiB/s plus 5 minutes (at most 24 hours), is 408 `stalled`; the disk filling up is 507 `insufficient_storage`.
+        - With `sha256`, a body whose checksum differs is 422 `checksum_mismatch`. A `.qcow2` without the qcow2 magic is 422 `bad_image`.
+        - An `.iso` without an ISO 9660 or UDF signature at byte 32769 is kept, with `warning: iso_signature_missing`.
+        - 500 `conflict`: the `.part` was replaced by something else while it was written; nothing is renamed.
+
+        Errors are `{"message": "<code>"}` with the code alone. A missing `name` is refused by the parameter binder (400, its own message).
+      operationId: uploadImage
+      tags:
+        - Image methods
+      parameters:
+        - name: name
+          in: query
+          required: true
+          description: the file name to give the image
+          schema:
+            type: string
+          example: alpine-virt-3.24.2-x86_64.iso
+        - name: sha256
+          in: query
+          required: false
+          description: the expected SHA-256, 64 hex digits; otherwise 400 `bad_sha256`
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          $ref: "#/components/responses/ImageOK"
+        "400":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "408":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "409":
+          $ref: "#/components/responses/ResponseConflict"
+        "411":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "413":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "422":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "500":
+          $ref: "#/components/responses/ResponseInternalServerError"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+        "507":
+          $ref: "#/components/responses/ResponseBadRequest"
+
   /images/downloads:
     get:
       summary: List image downloads
@@ -547,7 +608,7 @@ paths:
     post:
       summary: Download an image from a URL
       description: |-
-        Downloads an ISO or a disk image from an http(s) URL the user gives into the `iso` folder of the storage folder, where the create form offers it. The service contacts no address of its own choosing. The answer comes once the server has answered, with the file's name; the transfer goes on in the background. The name comes from the server (Content-Disposition) or the URL, and must be one of the image names the service takes. An existing file is never overwritten. With `sha256`, a file whose checksum differs is deleted.
+        Downloads an ISO or a disk image from an http(s) URL the user gives into the `iso` folder of the storage folder, where the create form offers it. The service contacts no address of its own choosing. The answer comes once the server has answered, with the file's name; the transfer goes on in the background. The name comes from the server (Content-Disposition) or the URL, and must be one of the image names the service takes. An existing file is never overwritten, and a name being uploaded is 409. With `sha256`, a file whose checksum differs is deleted.
       operationId: startDownload
       tags:
         - Image methods
@@ -1064,6 +1125,17 @@ components:
                     type: array
                     items:
                       $ref: "#/components/schemas/Image"
+
+    ImageOK:
+      description: OK
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/BaseResponse"
+              - properties:
+                  data:
+                    $ref: "#/components/schemas/Image"
 
   schemas:
     StatsItem:
@@ -1819,3 +1891,9 @@ components:
         size_bytes:
           type: integer
           format: int64
+        sha256:
+          description: the SHA-256 of the file, in hex; only in an upload's answer
+          type: string
+        warning:
+          description: "only in an upload's answer: `iso_signature_missing` when an .iso has no ISO 9660 or UDF signature (it is kept)"
+          type: string

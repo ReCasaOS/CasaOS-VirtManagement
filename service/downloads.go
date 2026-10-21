@@ -46,6 +46,10 @@ type Downloads struct {
 	dir    func() string // the folder, asked each time: the config can say where
 	client *http.Client
 
+	// claims holds the names being written in the folder, by downloads and
+	// by the uploads that share it (NewUploads).
+	claims *claims
+
 	mu    sync.Mutex
 	items []*download // oldest first
 }
@@ -67,7 +71,7 @@ func NewDownloads(ctx context.Context, dir func() string) *Downloads {
 	transport.DialContext = (&net.Dialer{Timeout: 30 * time.Second}).DialContext
 	transport.ResponseHeaderTimeout = 60 * time.Second
 
-	return &Downloads{ctx: ctx, dir: dir, client: &http.Client{Transport: transport}}
+	return &Downloads{ctx: ctx, dir: dir, client: &http.Client{Transport: transport}, claims: newClaims()}
 }
 
 // CleanParts deletes what downloads cut short by a stop left behind.
@@ -134,11 +138,15 @@ func (d *Downloads) Start(rawURL, sha string) (codegen.Download, error) {
 		return codegen.Download{}, fmt.Errorf("%w: %s is there already", ErrConflict, dst)
 	}
 
+	avail := int64(-1) // unknown: not checked
 	if resp.ContentLength > 0 {
-		if free, err := freeBytes(dir); err == nil && free < resp.ContentLength {
-			resp.Body.Close()
-			cancel()
-			return codegen.Download{}, fmt.Errorf("%w: the image is %d MiB, %s has %d MiB free", ErrInvalid, resp.ContentLength>>20, dir, free>>20)
+		if free, err := freeBytes(dir); err == nil {
+			if free < resp.ContentLength {
+				resp.Body.Close()
+				cancel()
+				return codegen.Download{}, fmt.Errorf("%w: the image is %d MiB, %s has %d MiB free", ErrInvalid, resp.ContentLength>>20, dir, free>>20)
+			}
+			avail = free
 		}
 	}
 
@@ -148,38 +156,42 @@ func (d *Downloads) Start(rawURL, sha string) (codegen.Download, error) {
 		state: codegen.Downloading,
 	}
 
-	// one file per name: a second download of it would write the same .part
-	d.mu.Lock()
-	for _, other := range d.items {
-		if other.path == dst && other.getState() == codegen.Downloading {
-			d.mu.Unlock()
-			resp.Body.Close()
-			cancel()
-			return codegen.Download{}, fmt.Errorf("%w: %s is being downloaded already", ErrConflict, name)
+	// one writer per name, download or upload: they would write the same .part
+	if err := d.claims.claim(dst, max(resp.ContentLength, 0), avail); err != nil {
+		resp.Body.Close()
+		cancel()
+		if errors.Is(err, errNoRoom) {
+			return codegen.Download{}, fmt.Errorf("%w: the image is %d MiB, %s has not that much free besides the uploads and downloads running", ErrInvalid, resp.ContentLength>>20, dir)
 		}
+		return codegen.Download{}, fmt.Errorf("%w: %s is being downloaded or uploaded already", ErrConflict, name)
 	}
+
+	d.mu.Lock()
 	d.items = append(d.items, item)
 	d.trim()
 	d.mu.Unlock()
 
 	logger.Info("downloading an image", zap.String("url", item.url), zap.String("path", dst))
 
-	go item.run(resp)
+	go item.run(resp, d.claims)
 
 	return item.view(), nil
 }
 
 // run writes the body to <path>.part, checks it, and renames it.
-func (item *download) run(resp *http.Response) {
+func (item *download) run(resp *http.Response, claims *claims) {
+	defer claims.release(item.path)
 	defer resp.Body.Close()
 	defer item.cancel()
 
 	part := item.path + partSuffix
+	created := false // a .part that was there is another writer's: never removed
 	err := func() error {
 		f, err := os.OpenFile(part, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err != nil {
 			return err
 		}
+		created = true
 		defer f.Close()
 
 		var sum hash.Hash
@@ -211,7 +223,12 @@ func (item *download) run(resp *http.Response) {
 			return context.Canceled
 		}
 
-		return os.Rename(part, item.path)
+		if err := renameNoReplace(part, item.path); errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("%s is there already", item.path)
+		} else if err != nil {
+			return err
+		}
+		return nil
 	}()
 
 	if err == nil {
@@ -220,7 +237,9 @@ func (item *download) run(resp *http.Response) {
 		return
 	}
 
-	os.Remove(part)
+	if created {
+		os.Remove(part)
+	}
 
 	if errors.Is(err, context.Canceled) && item.getState() == codegen.Canceled {
 		logger.Info("canceled an image download", zap.String("url", item.url))

@@ -46,11 +46,15 @@ type VMs struct {
 
 	// Downloads fetches images from URLs the user gives into the iso folder.
 	Downloads *Downloads
+
+	// Uploads writes images the browser sends into the iso folder.
+	Uploads *Uploads
 }
 
 func NewVMs(ctx context.Context, conn *libvirt.Conn, events *Events, net libvirt.NetworkSpec, fw *firewall.Firewall) *VMs {
 	downloads := NewDownloads(ctx, func() string { return filepath.Join(config.StoragePath(), ISOFolderName) })
-	return &VMs{conn: conn, events: events, ctx: ctx, creating: map[string]bool{}, net: net, fw: fw, Downloads: downloads}
+	return &VMs{conn: conn, events: events, ctx: ctx, creating: map[string]bool{}, net: net, fw: fw,
+		Downloads: downloads, Uploads: NewUploads(downloads, config.MaxUploadBytes())}
 }
 
 // Network is the CasaOS network.

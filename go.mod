@@ -15,6 +15,7 @@ require (
 	github.com/ulikunitz/xz v0.5.17
 	go.uber.org/zap v1.28.0
 	golang.org/x/sys v0.48.0
+	golang.org/x/text v0.42.0
 	gopkg.in/ini.v1 v1.67.3
 )
 
@@ -60,7 +61,6 @@ require (
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20220303212507-bbda1eaf7a17 // indirect
 	golang.org/x/net v0.59.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )

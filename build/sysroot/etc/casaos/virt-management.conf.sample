@@ -23,6 +23,10 @@ Subnet = 192.168.123.0/24
 ; where disks and ISOs live; must be under /DATA so the file browser shows them
 Path = /DATA/VM
 
+[images]
+; the largest image the browser can upload into the iso folder, in GiB
+MaxUploadGiB = 64
+
 [stats]
 ; the VMs' statistics history (7 days) and alert settings
 Path = /var/lib/casaos/stats/virt_management

@@ -110,8 +110,9 @@ func InitV2Router(conn *libvirt.Conn, vms *service.VMs, st *service.Stats) http.
 		},
 		TokenLookupFuncs: []echo_middleware.ValuesExtractor{
 			func(c echo.Context) ([]string, error) {
-				if token := c.Request().Header.Get(echo.HeaderAuthorization); token != "" || !acceptsTokenInQuery(c) {
-					return []string{token}, nil
+				// header or query: the raw header decides; the token in it bare or `Bearer <token>`
+				if authorization := c.Request().Header.Get(echo.HeaderAuthorization); authorization != "" || !acceptsTokenInQuery(c) {
+					return []string{jwt.TokenFromAuthorization(authorization)}, nil
 				}
 
 				return []string{c.QueryParam("token")}, nil

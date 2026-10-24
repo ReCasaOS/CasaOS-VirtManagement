@@ -3,7 +3,7 @@ module github.com/ReCasaOS/CasaOS-VirtManagement
 go 1.26.8
 
 require (
-	github.com/ReCasaOS/CasaOS-Common v0.4.31
+	github.com/ReCasaOS/CasaOS-Common v0.4.32
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf
 	github.com/deepmap/oapi-codegen v1.12.4
 	github.com/digitalocean/go-libvirt v0.0.0-20260814190004-1a83157e1858

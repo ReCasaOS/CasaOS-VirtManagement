@@ -1,3 +1,9 @@
+<p align="center"><img src="https://raw.githubusercontent.com/ReCasaOS/.github/main/assets/recasaos-banner.svg" alt="ReCasaOS" width="640"></p>
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/C6K229ZZRH)
+
+[Support ReCasaOS](https://github.com/ReCasaOS/.github/blob/main/FUNDING.md)
+
 # CasaOS-VirtManagement
 
 > **Not affiliated with IceWhale.** A module for [ReCasaOS](https://github.com/ReCasaOS/CasaOS), an independent, community-maintained distribution of CasaOS. CASAOS is a trademark of Shanghai IceWhale Technology Limited, used here only to say what this is a module of.

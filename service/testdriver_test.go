@@ -206,3 +206,71 @@ func TestDriverUpdateAndPorts(t *testing.T) {
 		t.Fatalf("the same host port for a second VM: %v, want a refusal", err)
 	}
 }
+
+func TestDriverShares(t *testing.T) {
+	vms, _ := testDriverVMs(t)
+	_, media, _ := shareRoots(t)
+	cam := filepath.Join(media, "sda1", "data_cam")
+
+	saved := virtiofsd
+	t.Cleanup(func() { virtiofsd = saved })
+
+	start := false
+	vm, _, err := vms.Create(codegen.VMCreate{Title: "shares", Vcpus: 1, MemoryMib: 256, DiskGib: 1, Start: &start})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := vm.Id
+	t.Cleanup(func() { _, _ = vms.Delete(id, true) })
+
+	if vm.Shares == nil || len(*vm.Shares) != 0 {
+		t.Fatalf("a new VM shares nothing: %+v", vm.Shares)
+	}
+
+	// without virtiofsd nothing changes
+	virtiofsd = func() string { return "" }
+	if _, err := vms.SetShares(id, []codegen.Share{{Source: cam, Tag: "data_cam"}}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("no virtiofsd: %v, want a conflict", err)
+	}
+
+	virtiofsd = func() string { return "/usr/libexec/virtiofsd" }
+	vm, err = vms.SetShares(id, []codegen.Share{{Source: cam + "/", Tag: "data_cam"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vm.Shares == nil || len(*vm.Shares) != 1 || (*vm.Shares)[0] != (codegen.Share{Source: cam, Tag: "data_cam"}) {
+		t.Fatalf("shared: %+v", vm.Shares)
+	}
+
+	l, dom, err := vms.lookup(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc, err := l.DomainGetXMLDesc(dom, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := libvirt.ParseDomainXML(desc)
+	if err != nil || !d.SharedMemory || d.Metadata == nil {
+		t.Fatalf("shared memory on, metadata kept: %v %v %v", d.SharedMemory, d.Metadata, err)
+	}
+
+	// a tag or a folder twice, a bad tag, a folder outside: refused, nothing changes
+	for _, bad := range [][]codegen.Share{
+		{{Source: cam, Tag: "a"}, {Source: cam, Tag: "b"}},
+		{{Source: cam, Tag: "a b"}},
+		{{Source: "/etc", Tag: "etc"}},
+	} {
+		if _, err := vms.SetShares(id, bad); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("%+v: %v, want ErrInvalid", bad, err)
+		}
+	}
+
+	vm, err = vms.SetShares(id, []codegen.Share{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vm.Shares == nil || len(*vm.Shares) != 0 {
+		t.Fatalf("stopped sharing: %+v", vm.Shares)
+	}
+}

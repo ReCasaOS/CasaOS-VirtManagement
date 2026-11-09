@@ -459,6 +459,33 @@ paths:
         "503":
           $ref: "#/components/responses/ResponseServiceUnavailable"
 
+  /vms/{id}/shares:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+
+    put:
+      summary: Set the host folders shared with the VM
+      description: |-
+        The whole list: folders not in it stop being shared. Each folder of the host, under /DATA or /media, is shared with virtiofs under a tag, which the guest mounts (`mount -t virtiofs <tag> <folder>`); the guest reads and writes it as the host's root, so its own users' rights inside it are the host's file modes. Changes take effect at the VM's next start, as `pending_restart` says.
+
+        The first share also turns on shared memory for the VM, which virtiofs needs; it stays on when the last share goes. 409 when the host has no virtiofsd (`virtiofs` false on the host: `apt install virtiofsd`), or the VM keeps its memory some other way, or CasaOS did not create the VM. 400 for a folder that is not an existing folder under /DATA or /media, a tag that is not 1-36 letters, digits, `.`, `_` or `-`, or a tag or folder listed twice.
+      operationId: setShares
+      tags:
+        - VM methods
+      requestBody:
+        $ref: "#/components/requestBodies/SetShares"
+      responses:
+        "200":
+          $ref: "#/components/responses/VMOK"
+        "400":
+          $ref: "#/components/responses/ResponseBadRequest"
+        "404":
+          $ref: "#/components/responses/ResponseNotFound"
+        "409":
+          $ref: "#/components/responses/ResponseConflict"
+        "503":
+          $ref: "#/components/responses/ResponseServiceUnavailable"
+
   /vms/{id}/ports:
     parameters:
       - $ref: "#/components/parameters/VMID"
@@ -857,6 +884,21 @@ components:
                 type: array
                 items:
                   $ref: "#/components/schemas/USBID"
+
+    SetShares:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - shares
+            properties:
+              shares:
+                type: array
+                maxItems: 16
+                items:
+                  $ref: "#/components/schemas/Share"
 
     CreateSnapshot:
       required: true
@@ -1385,6 +1427,9 @@ components:
         uefi:
           description: UEFI firmware is installed, so a VM can boot with firmware `uefi`
           type: boolean
+        virtiofs:
+          description: virtiofsd is installed, so host folders can be shared with VMs
+          type: boolean
         cpus:
           type: integer
           example: 4
@@ -1601,6 +1646,23 @@ components:
           type: string
           format: date-time
 
+    Share:
+      description: a host folder shared with the VM over virtiofs
+      type: object
+      required:
+        - source
+        - tag
+      properties:
+        source:
+          description: the host folder, under /DATA or /media
+          type: string
+          example: /media/sda1/data_cam
+        tag:
+          description: what the guest mounts it by
+          type: string
+          pattern: "^[A-Za-z0-9._-]{1,36}$"
+          example: data_cam
+
     USBID:
       type: object
       required:
@@ -1771,7 +1833,7 @@ components:
           description: has a VNC display the console can open
           type: boolean
         pending_restart:
-          description: the definition differs from the running VM (CPU, memory, disks, network) and applies at the next start
+          description: the definition differs from the running VM (CPU, memory, disks, network, shared folders) and applies at the next start
           type: boolean
         network:
           $ref: "#/components/schemas/VMNetwork"
@@ -1787,6 +1849,11 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/VMUSBDevice"
+        shares:
+          description: host folders shared with the VM, as its next start will have them
+          type: array
+          items:
+            $ref: "#/components/schemas/Share"
         snapshots:
           description: oldest first
           type: array

@@ -333,3 +333,18 @@ func (v *VirtManagement) SetStorage(ctx echo.Context) error {
 
 	return ctx.JSON(http.StatusOK, codegen.StorageFolderOK{Data: &folder})
 }
+
+func (v *VirtManagement) SetShares(ctx echo.Context, id codegen.VMID) error {
+	var req codegen.SetSharesJSONRequestBody
+	if err := ctx.Bind(&req); err != nil {
+		message := err.Error()
+		return ctx.JSON(http.StatusBadRequest, codegen.BaseResponse{Message: &message})
+	}
+
+	vm, err := v.vms.SetShares(id, req.Shares)
+	if err != nil {
+		return fail(ctx, err)
+	}
+
+	return ctx.JSON(http.StatusOK, codegen.VMOK{Data: &vm})
+}

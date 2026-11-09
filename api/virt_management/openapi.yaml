@@ -193,6 +193,8 @@ paths:
         `title` applies at once. `vcpus` and `memory_mib` are written to the VM's definition and take effect at its next start.
 
         `network` moves a VM on another network to the CasaOS network, the only value it takes: the VM gets a fixed address there, at its next start.
+
+        `autostart` applies at once: libvirt starts the VM when it starts itself, at the host's boot.
       operationId: updateVM
       tags:
         - VM methods
@@ -1498,6 +1500,10 @@ components:
         start:
           type: boolean
           default: true
+        autostart:
+          description: start the VM when the host boots
+          type: boolean
+          default: false
 
     NetworkChoice:
       description: where a VM's network card goes; the CasaOS network when not given
@@ -1699,6 +1705,9 @@ components:
         memory_mib:
           type: integer
           minimum: 128
+        autostart:
+          description: start the VM when the host boots
+          type: boolean
 
     Disk:
       type: object
@@ -1772,6 +1781,9 @@ components:
           type: boolean
         pending_restart:
           description: the definition differs from the running VM (CPU, memory, disks, network) and applies at the next start
+          type: boolean
+        autostart:
+          description: libvirt starts the VM when the host boots
           type: boolean
         network:
           $ref: "#/components/schemas/VMNetwork"

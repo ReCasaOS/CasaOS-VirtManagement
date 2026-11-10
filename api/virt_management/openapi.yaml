@@ -374,7 +374,7 @@ paths:
     post:
       summary: Take a snapshot
       description: |-
-        Saves the state of a VM that is shut off: every disk (as a qcow2 internal snapshot) and, with UEFI, its variables. The memory is not saved, since the VM is off. Only for a VM CasaOS created, with qcow2 disks CasaOS created; a disk still in the old qcow2 format (0.10) is upgraded first. While a VM has snapshots, disks can be grown but not added or removed.
+        Saves the state of a VM, off, running or paused: every disk (as a qcow2 internal snapshot) and, with UEFI, its variables, all at the same instant. The memory is not saved: going back to the snapshot starts the VM as after a power cut. A running VM is paused for the instant of the snapshot, and its file systems are frozen first when its guest agent answers. Only for a VM CasaOS created, with qcow2 disks CasaOS created; a disk still in the old qcow2 format (0.10) is upgraded first, which needs the VM off. While a VM has snapshots, disks can be grown but not added or removed.
       operationId: createSnapshot
       tags:
         - VM methods

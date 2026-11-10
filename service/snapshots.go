@@ -21,60 +21,78 @@ import (
 	"go.uber.org/zap"
 )
 
-// Snapshots are taken with the VM off, as qcow2 internal snapshots made by
-// qemu-img, plus a copy of the UEFI variables. libvirt refuses internal
-// snapshots of a VM with pflash firmware, and its external snapshots cannot
-// be deleted once the VM went back to one (libvirt 10 and 12).
+// Snapshots are qcow2 internal snapshots, without the memory, plus a copy of
+// the UEFI variables. libvirt refuses internal snapshots of a VM with pflash
+// firmware, and its external snapshots cannot be deleted once the VM went
+// back to one (libvirt 10 and 12). So with the VM off qemu-img takes them,
+// and with the VM on its own QEMU does, over QMP: the same kind of snapshot,
+// which qemu-img later goes back to or deletes with the VM off.
 
 const snapshotTimeout = 5 * time.Minute
 
+// snapshotStateOK tells whether a VM in state can take a snapshot (take) or
+// go back to or delete one: only taking one works with the VM on.
+func snapshotStateOK(state string, take bool) bool {
+	switch state {
+	case libvirt.StateShutOff, libvirt.StateCrashed:
+		return true
+	case libvirt.StateRunning, libvirt.StatePaused:
+		return take
+	}
+
+	return false
+}
+
 // forSnapshots looks a VM up for a snapshot operation: one CasaOS created,
-// shut off, with only qcow2 disks CasaOS created.
-func (s *VMs) forSnapshots(id uuid.UUID) (*golibvirt.Libvirt, golibvirt.Domain, libvirt.Domain, error) {
+// in a state snapshotStateOK accepts, with only qcow2 disks CasaOS created.
+func (s *VMs) forSnapshots(id uuid.UUID, take bool) (*golibvirt.Libvirt, golibvirt.Domain, libvirt.Domain, string, error) {
 	l, dom, err := s.lookup(id)
 	if err != nil {
-		return nil, dom, libvirt.Domain{}, err
+		return nil, dom, libvirt.Domain{}, "", err
 	}
 
 	state, err := s.state(l, dom)
 	if err != nil {
-		return nil, dom, libvirt.Domain{}, err
+		return nil, dom, libvirt.Domain{}, "", err
 	}
-	if state != libvirt.StateShutOff && state != libvirt.StateCrashed {
-		return nil, dom, libvirt.Domain{}, fmt.Errorf("%w: snapshots are taken and restored with the VM off; shut it down first", ErrConflict)
+	if !snapshotStateOK(state, take) {
+		if take {
+			return nil, dom, libvirt.Domain{}, "", fmt.Errorf("%w: the VM is %s; wait until it is on or off", ErrConflict, state)
+		}
+		return nil, dom, libvirt.Domain{}, "", fmt.Errorf("%w: snapshots are restored and deleted with the VM off; shut it down first", ErrConflict)
 	}
 
 	desc, err := l.DomainGetXMLDesc(dom, golibvirt.DomainXMLInactive)
 	if err != nil {
-		return nil, dom, libvirt.Domain{}, err
+		return nil, dom, libvirt.Domain{}, "", err
 	}
 
 	d, err := libvirt.ParseDomainXML(desc)
 	if err != nil {
-		return nil, dom, libvirt.Domain{}, err
+		return nil, dom, libvirt.Domain{}, "", err
 	}
 
 	if d.Metadata == nil {
-		return nil, dom, libvirt.Domain{}, fmt.Errorf("%w: CasaOS did not create this VM, so it does not take snapshots of it", ErrConflict)
+		return nil, dom, libvirt.Domain{}, "", fmt.Errorf("%w: CasaOS did not create this VM, so it does not take snapshots of it", ErrConflict)
 	}
 
 	for _, disk := range d.Disks {
 		if !s.ownsDisk(d, disk.Path) {
-			return nil, dom, libvirt.Domain{}, fmt.Errorf("%w: CasaOS did not create %s, so it does not take snapshots of it", ErrConflict, disk.Path)
+			return nil, dom, libvirt.Domain{}, "", fmt.Errorf("%w: CasaOS did not create %s, so it does not take snapshots of it", ErrConflict, disk.Path)
 		}
 	}
 
-	return l, dom, d, nil
+	return l, dom, d, state, nil
 }
 
-// CreateSnapshot saves the disks and UEFI variables of a VM that is off.
+// CreateSnapshot saves the disks and UEFI variables of a VM, off or on.
 func (s *VMs) CreateSnapshot(id uuid.UUID, name string) (codegen.VM, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return codegen.VM{}, fmt.Errorf("%w: the snapshot has no name", ErrInvalid)
 	}
 
-	l, dom, d, err := s.forSnapshots(id)
+	l, dom, d, state, err := s.forSnapshots(id, true)
 	if err != nil {
 		return codegen.VM{}, err
 	}
@@ -84,37 +102,20 @@ func (s *VMs) CreateSnapshot(id uuid.UUID, name string) (codegen.VM, error) {
 
 	snap := libvirt.Snapshot{ID: nextSnapshotID(d.Metadata.Snapshots), Name: name, Created: time.Now().UTC().Format(time.RFC3339)}
 
-	var done []string
-	undo := func() {
-		for _, path := range done {
-			if err := qemuImg(ctx, "snapshot", "-d", snap.ID, path); err != nil {
-				logger.Error("error when undoing a snapshot", zap.String("path", path), zap.Error(err))
-			}
-		}
-		_ = os.Remove(nvramCopy(d.NVRAM, snap.ID))
+	live := state == libvirt.StateRunning || state == libvirt.StatePaused
+
+	var undo func()
+	if live {
+		undo, err = snapshotLive(ctx, l, dom, d, snap.ID)
+	} else {
+		undo, err = snapshotOff(ctx, d, snap.ID)
+	}
+	if err != nil {
+		return codegen.VM{}, err
 	}
 
-	for _, disk := range d.Disks {
-		if err := upgradeQcow2(ctx, disk.Path); err != nil {
-			undo()
-			return codegen.VM{}, err
-		}
-		if err := qemuImg(ctx, "snapshot", "-c", snap.ID, disk.Path); err != nil {
-			undo()
-			return codegen.VM{}, fmt.Errorf("snapshot %s: %w", disk.Path, err)
-		}
-		done = append(done, disk.Path)
-	}
-
-	// before the first start there are no variables yet: going back to
-	// this snapshot then removes them, and libvirt makes them afresh
-	if d.NVRAM != "" {
-		if err := copyFile(d.NVRAM, nvramCopy(d.NVRAM, snap.ID)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			undo()
-			return codegen.VM{}, fmt.Errorf("save the UEFI variables: %w", err)
-		}
-	}
-
+	// the definition only: the API reads the list there, and writing it works
+	// even if the VM stopped meanwhile
 	m := *d.Metadata
 	m.Snapshots = append(slices.Clone(m.Snapshots), snap)
 	if err := setMetadata(l, dom, m, false); err != nil {
@@ -122,15 +123,246 @@ func (s *VMs) CreateSnapshot(id uuid.UUID, name string) (codegen.VM, error) {
 		return codegen.VM{}, fmt.Errorf("record the snapshot: %w", err)
 	}
 
-	logger.Info("took a snapshot", zap.String("vm", d.Name), zap.String("snapshot", snap.ID), zap.String("name", name))
+	logger.Info("took a snapshot", zap.String("vm", d.Name), zap.String("snapshot", snap.ID), zap.String("name", name), zap.Bool("live", live))
 
 	return s.toVM(l, dom)
+}
+
+// snapshotOff has qemu-img take snapshot id of every disk of a VM that is off.
+// undo deletes what it made.
+func snapshotOff(ctx context.Context, d libvirt.Domain, id string) (undo func(), err error) {
+	var done []string
+	undo = func() {
+		for _, path := range done {
+			if err := qemuImg(ctx, "snapshot", "-d", id, path); err != nil {
+				logger.Error("error when undoing a snapshot", zap.String("path", path), zap.Error(err))
+			}
+		}
+		_ = os.Remove(nvramCopy(d.NVRAM, id))
+	}
+
+	for _, disk := range d.Disks {
+		if err := upgradeQcow2(ctx, disk.Path); err != nil {
+			undo()
+			return nil, err
+		}
+		if err := qemuImg(ctx, "snapshot", "-c", id, disk.Path); err != nil {
+			undo()
+			return nil, fmt.Errorf("snapshot %s: %w", disk.Path, err)
+		}
+		done = append(done, disk.Path)
+	}
+
+	if err := saveNVRAM(d, id); err != nil {
+		undo()
+		return nil, err
+	}
+
+	return undo, nil
+}
+
+// snapshotLive has the QEMU of a running or paused VM take snapshot id of
+// every disk at once, in one QMP transaction, and saves the UEFI variables
+// in the same instant. The guest file systems are frozen first when its
+// agent answers. undo deletes what it made.
+func snapshotLive(ctx context.Context, l *golibvirt.Libvirt, dom golibvirt.Domain, d libvirt.Domain, id string) (undo func(), err error) {
+	for _, disk := range d.Disks {
+		info, err := qcow2Info(ctx, disk.Path)
+		if err != nil {
+			return nil, err
+		}
+		// amend cannot upgrade a file QEMU holds
+		if info.FormatSpecific.Data.Compat == "0.10" {
+			return nil, fmt.Errorf("%w: %s is an old qcow2 0.10 file; take this first snapshot with the VM off, CasaOS upgrades it then", ErrConflict, disk.Path)
+		}
+	}
+
+	blocks, err := qmp(l, dom, map[string]any{"execute": "query-block"})
+	if err != nil {
+		return nil, err
+	}
+	nodes, err := diskNodes(blocks, d.Disks)
+	if err != nil {
+		return nil, err
+	}
+
+	// read again: the user may have paused it since; a paused guest cannot
+	// answer its agent, and stays paused
+	state, _, err := l.DomainGetState(dom, 0)
+	if err != nil {
+		return nil, err
+	}
+	if golibvirt.DomainState(state) == golibvirt.DomainRunning {
+		_, freezeErr := l.DomainFsfreeze(dom, nil, 0)
+		if freezeErr != nil {
+			logger.Info("snapshot without freezing the guest file systems", zap.String("vm", d.Name), zap.Error(freezeErr))
+		}
+		// thaw even after a failed freeze: the agent may have frozen late
+		defer func() {
+			if _, err := l.DomainFsthaw(dom, nil, 0); err != nil && freezeErr == nil {
+				logger.Error("error when thawing the guest file systems; virsh domfsthaw does it", zap.String("vm", d.Name), zap.Error(err))
+			}
+		}()
+
+		// stopped vCPUs cannot write the UEFI variables while they are copied
+		if err := l.DomainSuspend(dom); err != nil {
+			return nil, fmt.Errorf("pause the VM: %w", err)
+		}
+		defer func() {
+			if err := l.DomainResume(dom); err != nil {
+				logger.Error("error when resuming the VM after a snapshot", zap.String("vm", d.Name), zap.Error(err))
+			}
+		}()
+	}
+
+	if _, err := qmp(l, dom, snapshotTransaction(nodes, id)); err != nil {
+		return nil, fmt.Errorf("snapshot the disks: %w", err)
+	}
+
+	undo = func() {
+		for i, node := range nodes {
+			cmd := map[string]any{"execute": "blockdev-snapshot-delete-internal-sync", "arguments": map[string]string{"device": node, "name": id}}
+			if _, err := qmp(l, dom, cmd); err == nil {
+				continue
+			}
+			// the VM stopped meanwhile: qemu-img can reach the file now
+			if err := qemuImg(ctx, "snapshot", "-d", id, d.Disks[i].Path); err != nil {
+				logger.Error("error when undoing a snapshot", zap.String("path", d.Disks[i].Path), zap.Error(err))
+			}
+		}
+		_ = os.Remove(nvramCopy(d.NVRAM, id))
+	}
+
+	if err := saveNVRAM(d, id); err != nil {
+		undo()
+		return nil, err
+	}
+
+	return undo, nil
+}
+
+// saveNVRAM copies the UEFI variables for snapshot id. Before the first start
+// there are none yet: going back to this snapshot then removes them, and
+// libvirt makes them afresh.
+func saveNVRAM(d libvirt.Domain, id string) error {
+	if d.NVRAM == "" {
+		return nil
+	}
+	if err := copyFile(d.NVRAM, nvramCopy(d.NVRAM, id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("save the UEFI variables: %w", err)
+	}
+
+	return nil
+}
+
+// snapshotTransaction is the QMP command that snapshots every node at once:
+// QEMU applies all or none.
+func snapshotTransaction(nodes []string, id string) map[string]any {
+	actions := make([]map[string]any, 0, len(nodes))
+	for _, node := range nodes {
+		actions = append(actions, map[string]any{
+			"type": "blockdev-snapshot-internal-sync",
+			"data": map[string]string{"device": node, "name": id},
+		})
+	}
+
+	return map[string]any{"execute": "transaction", "arguments": map[string]any{"actions": actions}}
+}
+
+// diskNodes finds, in the answer to query-block, the node of each disk:
+// the root node whose file is the disk, which must be qcow2.
+func diskNodes(queryBlock json.RawMessage, disks []libvirt.Disk) ([]string, error) {
+	type inserted struct {
+		File     string `json:"file"`
+		NodeName string `json:"node-name"`
+		Drv      string `json:"drv"`
+	}
+	var blocks []struct {
+		Inserted *inserted `json:"inserted"`
+	}
+	if err := json.Unmarshal(queryBlock, &blocks); err != nil {
+		return nil, fmt.Errorf("query-block: %w", err)
+	}
+
+	nodes := make([]string, 0, len(disks))
+	for _, disk := range disks {
+		var found *inserted
+		for _, b := range blocks {
+			if b.Inserted != nil && qmpFilename(b.Inserted.File) == disk.Path {
+				found = b.Inserted
+				break
+			}
+		}
+		if found == nil {
+			return nil, fmt.Errorf("%w: %s is not in the running VM yet; restart it first", ErrConflict, disk.Path)
+		}
+		if found.Drv != "qcow2" || found.NodeName == "" {
+			return nil, fmt.Errorf("%w: QEMU runs %s as %q, not qcow2", ErrConflict, disk.Path, found.Drv)
+		}
+		nodes = append(nodes, found.NodeName)
+	}
+
+	return nodes, nil
+}
+
+// qmpFilename is the path of a QEMU node's file, which QEMU writes as
+// json:{...} when options do not fit a plain name.
+func qmpFilename(file string) string {
+	spec, ok := strings.CutPrefix(file, "json:")
+	if !ok {
+		return file
+	}
+
+	var opts struct {
+		File struct {
+			Filename string `json:"filename"`
+		} `json:"file"`
+	}
+	if json.Unmarshal([]byte(spec), &opts) != nil {
+		return file
+	}
+
+	return opts.File.Filename
+}
+
+// qmp runs a QMP command in the VM's QEMU and returns its "return".
+// libvirt hands QMP errors back as an answer, not as an error.
+func qmp(l *golibvirt.Libvirt, dom golibvirt.Domain, cmd map[string]any) (json.RawMessage, error) {
+	body, err := json.Marshal(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := l.QEMUDomainMonitorCommand(dom, string(body), 0)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", cmd["execute"], err)
+	}
+
+	return qmpReturn(cmd["execute"], out)
+}
+
+func qmpReturn(execute any, out string) (json.RawMessage, error) {
+	var reply struct {
+		Return json.RawMessage `json:"return"`
+		Error  *struct {
+			Class string `json:"class"`
+			Desc  string `json:"desc"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(out), &reply); err != nil {
+		return nil, fmt.Errorf("%s: %w", execute, err)
+	}
+	if reply.Error != nil {
+		return nil, fmt.Errorf("%s: %s", execute, reply.Error.Desc)
+	}
+
+	return reply.Return, nil
 }
 
 // RevertSnapshot puts the disks and UEFI variables of a VM that is off back
 // as the snapshot saved them.
 func (s *VMs) RevertSnapshot(id uuid.UUID, snapshotID string) (codegen.VM, error) {
-	l, dom, d, err := s.forSnapshots(id)
+	l, dom, d, _, err := s.forSnapshots(id, false)
 	if err != nil {
 		return codegen.VM{}, err
 	}
@@ -177,7 +409,7 @@ func (s *VMs) RevertSnapshot(id uuid.UUID, snapshotID string) (codegen.VM, error
 
 // DeleteSnapshot deletes a snapshot of a VM that is off.
 func (s *VMs) DeleteSnapshot(id uuid.UUID, snapshotID string) (codegen.VM, error) {
-	l, dom, d, err := s.forSnapshots(id)
+	l, dom, d, _, err := s.forSnapshots(id, false)
 	if err != nil {
 		return codegen.VM{}, err
 	}
@@ -290,7 +522,8 @@ type qcow2InfoJSON struct {
 func qcow2Info(ctx context.Context, path string) (qcow2InfoJSON, error) {
 	var info qcow2InfoJSON
 
-	out, err := exec.CommandContext(ctx, "qemu-img", "info", "--output=json", "-f", "qcow2", path).Output()
+	// -U: a running VM's QEMU holds the write lock
+	out, err := exec.CommandContext(ctx, "qemu-img", "info", "-U", "--output=json", "-f", "qcow2", path).Output()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {

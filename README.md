@@ -15,7 +15,7 @@ Virtual machines for a ReCasaOS box: a service that drives libvirt and QEMU, and
 - **VMs**: create from an ISO or a disk image (qcow2, img/raw, vmdk, vdi, also .xz/.gz/.zip), start, shut down (ACPI), force off, pause, reset, delete (the disk is kept unless asked). vCPUs, memory, title and OS icon can be changed.
 - **Console** in the browser: VNC over a WebSocket through the gateway.
 - **Disks**: grow, add, remove; CD-ROM insert and eject; disks in `/DATA/VM` or a folder under `/DATA` or `/media`.
-- **Snapshots** with the VM off (qemu-img, UEFI variables included).
+- **Snapshots** with the VM off or on (qemu-img off, QMP on; UEFI variables included; no memory). Going back and deleting need the VM off.
 - **Network**, per VM: the CasaOS NAT network (fixed or DHCP address, port forwards from the host, reachable from containers), an existing host bridge, or macvtap on a wired card. The service never creates or changes host bridges.
 - **USB passthrough**, live on a running VM; devices the host needs (its network card, a mounted disk) are refused.
 - **Shared folders**: folders of the host under /DATA or /media given to a VM over virtiofs, which the guest mounts by tag (`mount -t virtiofs <tag> <folder>`); at the VM's next start. Needs `virtiofsd` on the host (`apt install virtiofsd`; the host reports `virtiofs`). The first share turns on shared memory (memfd) for the VM.

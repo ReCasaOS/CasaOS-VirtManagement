@@ -106,7 +106,7 @@ func (s *VMs) CreateSnapshot(id uuid.UUID, name string) (codegen.VM, error) {
 
 	var undo func()
 	if live {
-		undo, err = snapshotLive(ctx, l, dom, d, snap.ID, state == libvirt.StateRunning)
+		undo, err = snapshotLive(ctx, l, dom, d, snap.ID)
 	} else {
 		undo, err = snapshotOff(ctx, d, snap.ID)
 	}
@@ -114,10 +114,11 @@ func (s *VMs) CreateSnapshot(id uuid.UUID, name string) (codegen.VM, error) {
 		return codegen.VM{}, err
 	}
 
-	// the API reads the running VM's definition: it gets the list too
+	// the definition only: the API reads the list there, and writing it works
+	// even if the VM stopped meanwhile
 	m := *d.Metadata
 	m.Snapshots = append(slices.Clone(m.Snapshots), snap)
-	if err := setMetadata(l, dom, m, live); err != nil {
+	if err := setMetadata(l, dom, m, false); err != nil {
 		undo()
 		return codegen.VM{}, fmt.Errorf("record the snapshot: %w", err)
 	}
@@ -164,7 +165,7 @@ func snapshotOff(ctx context.Context, d libvirt.Domain, id string) (undo func(),
 // every disk at once, in one QMP transaction, and saves the UEFI variables
 // in the same instant. The guest file systems are frozen first when its
 // agent answers. undo deletes what it made.
-func snapshotLive(ctx context.Context, l *golibvirt.Libvirt, dom golibvirt.Domain, d libvirt.Domain, id string, running bool) (undo func(), err error) {
+func snapshotLive(ctx context.Context, l *golibvirt.Libvirt, dom golibvirt.Domain, d libvirt.Domain, id string) (undo func(), err error) {
 	for _, disk := range d.Disks {
 		info, err := qcow2Info(ctx, disk.Path)
 		if err != nil {
@@ -185,17 +186,23 @@ func snapshotLive(ctx context.Context, l *golibvirt.Libvirt, dom golibvirt.Domai
 		return nil, err
 	}
 
-	// a paused guest cannot answer its agent
-	if running {
-		if _, err := l.DomainFsfreeze(dom, nil, 0); err != nil {
-			logger.Info("snapshot without freezing the guest file systems", zap.String("vm", d.Name), zap.Error(err))
-		} else {
-			defer func() {
-				if _, err := l.DomainFsthaw(dom, nil, 0); err != nil {
-					logger.Error("error when thawing the guest file systems; virsh domfsthaw does it", zap.String("vm", d.Name), zap.Error(err))
-				}
-			}()
+	// read again: the user may have paused it since; a paused guest cannot
+	// answer its agent, and stays paused
+	state, _, err := l.DomainGetState(dom, 0)
+	if err != nil {
+		return nil, err
+	}
+	if golibvirt.DomainState(state) == golibvirt.DomainRunning {
+		_, freezeErr := l.DomainFsfreeze(dom, nil, 0)
+		if freezeErr != nil {
+			logger.Info("snapshot without freezing the guest file systems", zap.String("vm", d.Name), zap.Error(freezeErr))
 		}
+		// thaw even after a failed freeze: the agent may have frozen late
+		defer func() {
+			if _, err := l.DomainFsthaw(dom, nil, 0); err != nil && freezeErr == nil {
+				logger.Error("error when thawing the guest file systems; virsh domfsthaw does it", zap.String("vm", d.Name), zap.Error(err))
+			}
+		}()
 
 		// stopped vCPUs cannot write the UEFI variables while they are copied
 		if err := l.DomainSuspend(dom); err != nil {
@@ -213,10 +220,14 @@ func snapshotLive(ctx context.Context, l *golibvirt.Libvirt, dom golibvirt.Domai
 	}
 
 	undo = func() {
-		for _, node := range nodes {
+		for i, node := range nodes {
 			cmd := map[string]any{"execute": "blockdev-snapshot-delete-internal-sync", "arguments": map[string]string{"device": node, "name": id}}
-			if _, err := qmp(l, dom, cmd); err != nil {
-				logger.Error("error when undoing a snapshot", zap.String("node", node), zap.Error(err))
+			if _, err := qmp(l, dom, cmd); err == nil {
+				continue
+			}
+			// the VM stopped meanwhile: qemu-img can reach the file now
+			if err := qemuImg(ctx, "snapshot", "-d", id, d.Disks[i].Path); err != nil {
+				logger.Error("error when undoing a snapshot", zap.String("path", d.Disks[i].Path), zap.Error(err))
 			}
 		}
 		_ = os.Remove(nvramCopy(d.NVRAM, id))

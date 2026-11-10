@@ -36,7 +36,7 @@ func TestSnapshotStateOK(t *testing.T) {
 		{libvirt.StateRunning, true, false},
 		{libvirt.StatePaused, true, false},
 		{libvirt.StateCreating, false, false},
-		{"pmsuspended", false, false},
+		{libvirt.StateSuspended, false, false},
 	}
 
 	for _, c := range cases {

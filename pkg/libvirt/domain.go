@@ -602,10 +602,13 @@ type Domain struct {
 	Targets   []string // every disk and CD-ROM target, with a file or not
 	NICs      []Interface
 	USB       []USBDevice // host USB devices given to the VM
-	HasCDROM  bool
-	VNC       bool
-	VNCSocket string // only in a running domain's live XML
-	Metadata  *Metadata
+	Shares    []Share     // host folders shared over virtiofs
+	// SharedMemory: the memory backing virtiofs needs is there
+	SharedMemory bool
+	HasCDROM     bool
+	VNC          bool
+	VNCSocket    string // only in a running domain's live XML
+	Metadata     *Metadata
 
 	// Description is the owner's free text about the VM (virsh desc).
 	Description string
@@ -636,7 +639,8 @@ type domainInXML struct {
 	Metadata struct {
 		VM *Metadata `xml:"https://recasaos.github.io/xmlns/vm/1 vm"`
 	} `xml:"metadata"`
-	Devices struct {
+	MemoryBacking *memoryBackingXML `xml:"memoryBacking"`
+	Devices       struct {
 		Disks []struct {
 			Type   string `xml:"type,attr"`
 			Device string `xml:"device,attr"`
@@ -648,9 +652,10 @@ type domainInXML struct {
 			} `xml:"target"`
 			Boot *bootXML `xml:"boot"`
 		} `xml:"disk"`
-		Graphics   []graphicsXML  `xml:"graphics"`
-		Interfaces []interfaceXML `xml:"interface"`
-		Hostdevs   []hostdevXML   `xml:"hostdev"`
+		Graphics    []graphicsXML   `xml:"graphics"`
+		Interfaces  []interfaceXML  `xml:"interface"`
+		Hostdevs    []hostdevXML    `xml:"hostdev"`
+		Filesystems []filesystemXML `xml:"filesystem"`
 	} `xml:"devices"`
 
 	Description string `xml:"description"`
@@ -678,6 +683,8 @@ func ParseDomainXML(s string) (Domain, error) {
 		Metadata:  in.Metadata.VM,
 	}
 	d.Description = in.Description
+	d.Shares = sharesOf(in.Devices.Filesystems)
+	d.SharedMemory = in.MemoryBacking.shared()
 	if in.OS.NVRAM != nil {
 		d.NVRAM = strings.TrimSpace(in.OS.NVRAM.Value)
 	}

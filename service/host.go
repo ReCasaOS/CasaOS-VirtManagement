@@ -60,6 +60,9 @@ func Host(conn *libvirt.Conn, net libvirt.NetworkSpec) codegen.Host {
 	host.Kvm = &info.KVM
 	host.Uefi = &info.UEFI
 
+	virtiofs := virtiofsd() != ""
+	host.Virtiofs = &virtiofs
+
 	return host
 }
 

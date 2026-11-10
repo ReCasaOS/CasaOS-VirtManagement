@@ -18,6 +18,7 @@ Virtual machines for a ReCasaOS box: a service that drives libvirt and QEMU, and
 - **Snapshots** with the VM off (qemu-img, UEFI variables included).
 - **Network**, per VM: the CasaOS NAT network (fixed or DHCP address, port forwards from the host, reachable from containers), an existing host bridge, or macvtap on a wired card. The service never creates or changes host bridges.
 - **USB passthrough**, live on a running VM; devices the host needs (its network card, a mounted disk) are refused.
+- **Shared folders**: folders of the host under /DATA or /media given to a VM over virtiofs, which the guest mounts by tag (`mount -t virtiofs <tag> <folder>`); at the VM's next start. Needs `virtiofsd` on the host (`apt install virtiofsd`; the host reports `virtiofs`). The first share turns on shared memory (memfd) for the VM.
 - **Statistics**: CPU, memory, network and disk history per VM, and alerts when a VM is busy, short of memory or crashed (see below).
 - **Images from a URL** the user gives, with an optional sha256. No built-in catalogue: the box only contacts addresses the user gives.
 - **Images uploaded from the browser** into the same folder, listed as soon as they are written (see below).

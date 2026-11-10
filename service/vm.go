@@ -193,7 +193,7 @@ func (s *VMs) toVM(l *golibvirt.Libvirt, dom golibvirt.Domain) (codegen.VM, erro
 
 	managed := d.Metadata != nil
 	pendingRestart := next.VCPUs != d.VCPUs || next.MemoryMiB != d.MemoryMiB || !slices.Equal(next.Disks, d.Disks) ||
-		!slices.Equal(next.NICs, d.NICs)
+		!slices.Equal(next.NICs, d.NICs) || !slices.Equal(next.Shares, d.Shares)
 
 	// the disks of the next start, so that one added while the VM runs, but
 	// not plugged in, is listed too
@@ -241,6 +241,7 @@ func (s *VMs) toVM(l *golibvirt.Libvirt, dom golibvirt.Domain) (codegen.VM, erro
 	}
 
 	usb := usbOf(next, hostUSB())
+	shares := sharesOut(next)
 
 	// libvirt starts it with itself, at the host's boot; unknown reads as off
 	autostart := false
@@ -251,6 +252,7 @@ func (s *VMs) toVM(l *golibvirt.Libvirt, dom golibvirt.Domain) (codegen.VM, erro
 	return codegen.VM{
 		Autostart:      &autostart,
 		Usb:            &usb,
+		Shares:         &shares,
 		Os:             &osName,
 		Snapshots:      &snapshots,
 		Network:        network,

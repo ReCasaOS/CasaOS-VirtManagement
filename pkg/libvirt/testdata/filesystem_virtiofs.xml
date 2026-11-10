@@ -1,0 +1,1 @@
+<filesystem type="mount" accessmode="passthrough"><driver type="virtiofs"></driver><binary path="/usr/libexec/virtiofsd"></binary><source dir="/media/sda1/data_cam"></source><target dir="data_cam"></target></filesystem>

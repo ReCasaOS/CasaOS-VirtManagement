@@ -243,7 +243,14 @@ func (s *VMs) toVM(l *golibvirt.Libvirt, dom golibvirt.Domain) (codegen.VM, erro
 	usb := usbOf(next, hostUSB())
 	shares := sharesOut(next)
 
+	// libvirt starts it with itself, at the host's boot; unknown reads as off
+	autostart := false
+	if on, err := l.DomainGetAutostart(dom); err == nil {
+		autostart = on != 0
+	}
+
 	return codegen.VM{
+		Autostart:      &autostart,
 		Usb:            &usb,
 		Shares:         &shares,
 		Os:             &osName,
@@ -510,6 +517,13 @@ func (s *VMs) Create(req codegen.VMCreate) (codegen.VM, bool, error) {
 	id := uuidString(dom.UUID)
 	start := req.Start == nil || *req.Start
 
+	if req.Autostart != nil && *req.Autostart {
+		if err := setAutostart(l, dom, true); err != nil {
+			// the VM exists; it only will not start with the host, which its page shows
+			logger.Error("error when marking a new VM to start with the host", zap.String("id", id), zap.Error(err))
+		}
+	}
+
 	if nic.Type == libvirt.NICBridge {
 		s.applyFirewall(l)
 	}
@@ -607,6 +621,12 @@ func (s *VMs) Update(id uuid.UUID, req codegen.VMUpdate) (codegen.VM, error) {
 		}
 	}
 
+	if req.Autostart != nil {
+		if err := setAutostart(l, dom, *req.Autostart); err != nil {
+			return codegen.VM{}, err
+		}
+	}
+
 	if req.Os != nil {
 		if err := s.setOS(l, dom, string(*req.Os), live); err != nil {
 			return codegen.VM{}, err
@@ -647,6 +667,20 @@ func (s *VMs) Update(id uuid.UUID, req codegen.VMUpdate) (codegen.VM, error) {
 	}
 
 	return s.toVM(l, dom)
+}
+
+// setAutostart has libvirt start the VM when it starts itself, which is at the
+// host's boot: a VM that serves the network (DNS, DHCP, home automation) has to
+// come back after a power cut without anyone opening the dashboard.
+func setAutostart(l *golibvirt.Libvirt, dom golibvirt.Domain, on bool) error {
+	value := int32(0)
+	if on {
+		value = 1
+	}
+	if err := l.DomainSetAutostart(dom, value); err != nil {
+		return fmt.Errorf("set autostart: %w", err)
+	}
+	return nil
 }
 
 // osOf is the OS a request names; empty when it names none.

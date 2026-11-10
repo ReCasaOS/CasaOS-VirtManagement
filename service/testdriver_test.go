@@ -182,6 +182,20 @@ func TestDriverUpdateAndPorts(t *testing.T) {
 		t.Fatalf("updated %+v", vm)
 	}
 
+	// a VM starts with the host only when asked to, and stops doing so when asked
+	if vm.Autostart == nil || *vm.Autostart {
+		t.Fatalf("a new VM does not start with the host: %+v", vm.Autostart)
+	}
+	for _, on := range []bool{true, false} {
+		vm, err = vms.Update(id, codegen.VMUpdate{Autostart: &on})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if vm.Autostart == nil || *vm.Autostart != on {
+			t.Fatalf("autostart %v: %+v", on, vm.Autostart)
+		}
+	}
+
 	vm, err = vms.SetPorts(id, []codegen.PortForward{{Protocol: codegen.Tcp, HostPort: 58222, GuestPort: 22}})
 	if err != nil {
 		t.Fatal(err)
@@ -195,12 +209,16 @@ func TestDriverUpdateAndPorts(t *testing.T) {
 		t.Fatalf("the forward is not in the rules applied:\n%s", rules)
 	}
 
-	// a host port is forwarded to one VM only
-	other, _, err := vms.Create(codegen.VMCreate{Title: "other", Vcpus: 1, MemoryMib: 256, DiskGib: 1, Start: &start})
+	// a host port is forwarded to one VM only; this one is created to start with the host
+	autostart := true
+	other, _, err := vms.Create(codegen.VMCreate{Title: "other", Vcpus: 1, MemoryMib: 256, DiskGib: 1, Start: &start, Autostart: &autostart})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _, _ = vms.Delete(other.Id, true) })
+	if other.Autostart == nil || !*other.Autostart {
+		t.Fatalf("created to start with the host: %+v", other.Autostart)
+	}
 
 	if _, err := vms.SetPorts(other.Id, []codegen.PortForward{{Protocol: codegen.Tcp, HostPort: 58222, GuestPort: 22}}); !errors.Is(err, ErrInvalid) && !errors.Is(err, ErrConflict) {
 		t.Fatalf("the same host port for a second VM: %v, want a refusal", err)

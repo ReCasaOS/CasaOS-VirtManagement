@@ -2,6 +2,7 @@ package v2
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"github.com/ReCasaOS/CasaOS-Common/external"
 	"github.com/ReCasaOS/CasaOS-VirtManagement/codegen"
 	"github.com/ReCasaOS/CasaOS-VirtManagement/pkg/config"
+	"github.com/ReCasaOS/CasaOS-VirtManagement/pkg/libvirt"
+	"github.com/ReCasaOS/CasaOS-VirtManagement/service"
 	"github.com/labstack/echo/v4"
 )
 
@@ -135,6 +138,29 @@ func TestAVMWithoutItsHostPaths(t *testing.T) {
 	// nothing to leave out: nothing added
 	if bare := withoutHostPaths(codegen.VM{}); bare.Cdrom != nil || bare.Disks != nil || bare.Shares != nil {
 		t.Errorf("a VM with nothing got %+v", bare)
+	}
+}
+
+func TestLibvirtNotAnsweringIsToldWithoutItsWordsToAnAccountThatIsNotTheAdministrator(t *testing.T) {
+	down := fmt.Errorf("%w: dial unix /var/run/libvirt/libvirt-sock: no such file", libvirt.ErrUnavailable)
+	answer := func(owner bool, err error) (int, string) {
+		recorder := httptest.NewRecorder()
+		if err := failFor(echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), recorder), owner, err); err != nil {
+			t.Fatal(err)
+		}
+
+		return recorder.Code, recorder.Body.String()
+	}
+
+	if code, body := answer(false, down); code != http.StatusServiceUnavailable || strings.Contains(body, "/var/run") {
+		t.Errorf("a user: %d %s", code, body)
+	}
+	if code, body := answer(true, down); code != http.StatusServiceUnavailable || !strings.Contains(body, "/var/run") {
+		t.Errorf("the administrator: %d %s", code, body)
+	}
+	// any other failure is answered as before
+	if code, _ := answer(false, service.ErrNotFound); code != http.StatusNotFound {
+		t.Errorf("not found: %d", code)
 	}
 }
 

@@ -1,11 +1,13 @@
 package v2
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
 	"github.com/ReCasaOS/CasaOS-VirtManagement/codegen"
 	"github.com/ReCasaOS/CasaOS-VirtManagement/pkg/config"
+	"github.com/ReCasaOS/CasaOS-VirtManagement/pkg/libvirt"
 	"github.com/labstack/echo/v4"
 )
 
@@ -30,9 +32,24 @@ func roleUnknown(ctx echo.Context) error {
 	return ctx.JSON(http.StatusServiceUnavailable, codegen.BaseResponse{Message: &message})
 }
 
+// libvirtSilent stands for libvirt's own words, which name its sockets.
+const libvirtSilent = "libvirt does not answer"
+
+// failFor is fail for a read: libvirt not answering is told to an account that is not the
+// administrator without libvirt's own words.
+func failFor(ctx echo.Context, owner bool, err error) error {
+	if !owner && errors.Is(err, libvirt.ErrUnavailable) {
+		message := libvirtSilent
+
+		return ctx.JSON(http.StatusServiceUnavailable, codegen.BaseResponse{Message: &message})
+	}
+
+	return fail(ctx, err)
+}
+
 // withoutHostPaths is the VM as an account that is not the administrator reads it: the files of
-// its disks, the ISO in its drive and the host folders it shares are there, without their place
-// on the host. The VM given is not changed.
+// its disks and the host folders it shares are listed without their place on the host, and the
+// ISO in its drive is not named (the drive reads as empty). The VM given is not changed.
 func withoutHostPaths(vm codegen.VM) codegen.VM {
 	if vm.Cdrom != nil && *vm.Cdrom != "" {
 		vm.Cdrom = new(string)
@@ -60,7 +77,7 @@ func withoutHostPaths(vm codegen.VM) codegen.VM {
 func hostWithoutPaths(host codegen.Host) codegen.Host {
 	host.StoragePath = ""
 	if host.Reason != nil && *host.Reason != "" {
-		reason := "libvirt does not answer"
+		reason := libvirtSilent
 		host.Reason = &reason
 	}
 

@@ -93,7 +93,7 @@ func (v *VirtManagement) ListVMs(ctx echo.Context) error {
 	}
 	vms, err := v.vms.List()
 	if err != nil {
-		return fail(ctx, err)
+		return failFor(ctx, owner, err)
 	}
 	if !owner {
 		for i := range vms {
@@ -131,7 +131,7 @@ func (v *VirtManagement) GetVM(ctx echo.Context, id codegen.VMID) error {
 	}
 	vm, err := v.vms.Get(id)
 	if err != nil {
-		return fail(ctx, err)
+		return failFor(ctx, owner, err)
 	}
 	if !owner {
 		vm = withoutHostPaths(vm)

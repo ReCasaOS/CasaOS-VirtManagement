@@ -45,7 +45,14 @@ func fail(ctx echo.Context, err error) error {
 }
 
 func (v *VirtManagement) GetHost(ctx echo.Context) error {
+	owner, known := readsHostPaths(ctx)
+	if !known {
+		return roleUnknown(ctx)
+	}
 	host := service.Host(v.conn, v.vms.Network())
+	if !owner {
+		host = hostWithoutPaths(host)
+	}
 
 	return ctx.JSON(http.StatusOK, codegen.HostOK{Data: &host})
 }
@@ -80,9 +87,18 @@ func (v *VirtManagement) UploadImage(ctx echo.Context, params codegen.UploadImag
 }
 
 func (v *VirtManagement) ListVMs(ctx echo.Context) error {
+	owner, known := readsHostPaths(ctx)
+	if !known {
+		return roleUnknown(ctx)
+	}
 	vms, err := v.vms.List()
 	if err != nil {
 		return fail(ctx, err)
+	}
+	if !owner {
+		for i := range vms {
+			vms[i] = withoutHostPaths(vms[i])
+		}
 	}
 
 	return ctx.JSON(http.StatusOK, codegen.VMListOK{Data: &vms})
@@ -109,9 +125,16 @@ func (v *VirtManagement) CreateVM(ctx echo.Context) error {
 }
 
 func (v *VirtManagement) GetVM(ctx echo.Context, id codegen.VMID) error {
+	owner, known := readsHostPaths(ctx)
+	if !known {
+		return roleUnknown(ctx)
+	}
 	vm, err := v.vms.Get(id)
 	if err != nil {
 		return fail(ctx, err)
+	}
+	if !owner {
+		vm = withoutHostPaths(vm)
 	}
 
 	return ctx.JSON(http.StatusOK, codegen.VMOK{Data: &vm})

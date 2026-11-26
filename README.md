@@ -25,7 +25,7 @@ Virtual machines for a ReCasaOS box: a service that drives libvirt and QEMU, and
 
 ## How it is built
 
-The service listens on a random loopback port and registers `/v2/virt_management` (and its OpenAPI viewer under `/doc/v2/virt_management`) with CasaOS-Gateway. The API is `api/virt_management/openapi.yaml`; the Go server and types are generated from it (`go generate`) and are not committed.
+The service listens on a random loopback port and registers `/v2/virt_management` (and its OpenAPI description, `openapi.yaml`, under `/doc/v2/virt_management`) with CasaOS-Gateway. The API is `api/virt_management/openapi.yaml`; the Go server and types are generated from it (`go generate`) and are not committed.
 
 | Path under `/v2/virt_management` | |
 |---|---|
